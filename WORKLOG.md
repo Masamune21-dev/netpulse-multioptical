@@ -4,6 +4,15 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-10-03 — Notes: `fix/up-alert-cooldown` Digabung ke `main`
+
+- **Notes**: produksi berjalan di branch `fix/up-alert-cooldown` (= `main` + `670d3ef` reset sandi memutus sesi
+  web). Digabung fast-forward: `origin/main` dimajukan ke `670d3ef`, checkout produksi dipindah ke `main`
+  (upstream `origin/main`) tanpa satu berkas pun berubah. Branch fix lama dibiarkan di remote. Kit DR SSO
+  (`tools/dr/lib/apps.sh`) kini mengklon `main`. Ditemukan kit DR: database MariaDB `netpulse` (±2,3 GB) belum
+  pernah dicadangkan — sejak 3 Okt masuk `kv-backup-all.sh` (harian tanpa data `interface_stats` &
+  `interface_traffic_stats`, mingguan/bulanan penuh), bersama `storage/app` dan `storage/app/firebase` (blob rahasia).
+
 ## 2026-09-26 — Fixed: Reset Sandi oleh Admin Memutus Sesi Web
 
 - **Fixed**: sesi web tetap hidup (sliding 120 menit lewat polling dashboard) setelah admin mereset sandi
