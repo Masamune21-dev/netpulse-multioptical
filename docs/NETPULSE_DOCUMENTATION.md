@@ -1,6 +1,6 @@
 # NetPulse MultiOptical Documentation
 
-Last updated: 2026-05-06
+Last updated: 2026-10-04
 
 Dokumen ini menjelaskan struktur aplikasi NetPulse MultiOptical saat ini: UI web, mobile app, routing, API, role, setting, scheduler, polling SNMP, deployment, dan troubleshooting.
 
@@ -10,7 +10,7 @@ NetPulse MultiOptical adalah platform monitoring jaringan optik/SFP berbasis Lar
 
 Komponen utama:
 
-- Laravel 11 web dashboard dengan Blade views.
+- Laravel 12 web dashboard dengan Blade views (upgrade dari 11 pada 24 Sep 2026).
 - Legacy web API di `/api/*` untuk halaman web.
 - Mobile API v1 di `/api/v1/*` untuk Flutter app.
 - SNMP discovery/polling via command `poll:interfaces`.
@@ -26,6 +26,7 @@ Komponen utama:
 | `app/Http/Controllers/Api/V1` | Controller REST API untuk mobile app. |
 | `app/Http/Middleware` | Middleware session auth, role, dan bearer token API. |
 | `app/Services/InterfaceDiscovery.php` | Discovery SNMP, simpan interface/statistik, kirim alert. |
+| `app/Services/Optical/` | Deteksi vendor dan driver optik (lihat [Dukungan Vendor & Driver Optik](#dukungan-vendor--driver-optik)). |
 | `app/Services/FcmService.php` | Kirim FCM push notification via Firebase HTTP v1. |
 | `app/Console/Commands/PollInterfaces.php` | Artisan command polling semua device aktif. |
 | `routes/web.php` | Route halaman web dan legacy web API. |
@@ -36,6 +37,8 @@ Komponen utama:
 | `public/assets/css` | Global CSS. Halaman memuat `style.min.css`. |
 | `mobile/` | Flutter Android app. |
 | `scripts/cron/laravel_schedule_run.sh` | Script cron untuk menjalankan scheduler Laravel per menit. |
+| `scripts/test.sh` | Pembungkus test aman (sqlite in-memory, cache produksi dilewati). |
+| `bin/build-apk.sh` | Build APK rilis (split-per-abi) ke `public/downloads/`. |
 | `storage/logs` | Laravel log, security log, schedule log. |
 | `storage/app/alert_state.json` | State transisi alert polling SNMP. |
 
@@ -114,7 +117,8 @@ Dua konsekuensi yang mudah terlewat saat menambah endpoint:
 
 | Limiter | Batas | Dipasang di |
 |---|---|---|
-| `login` | 5/menit per `username\|ip` | `POST /login`, `POST /api/v1/auth/login` |
+| `login` | 5/menit per `username\|ip` **dan** 20/menit per IP (anti password spraying) | `POST /login`, `POST /api/v1/auth/login` |
+| `optical-snmp` | 6/menit per admin | Uji profil optik & deteksi ulang vendor |
 | `api` | 120/menit per user/token/IP | Seluruh grup `routes/api.php` |
 
 Kegagalan dan pembatasan dicatat ke `storage/logs/security.log` lewat
@@ -151,6 +155,13 @@ Di sisi keluaran:
   `is_active` dari DB (cache 60 detik), dipakai `EnsureAuthenticated` dan `EnsureRole`.
   Artinya **akun yang dinonaktifkan kehilangan sesinya dalam ≤60 detik**, tidak perlu
   menunggu logout. `UsersApiController` mem-flush cache itu saat user diubah atau dihapus.
+- Sejak 26 Sep 2026 `UserState` juga membawa sidik sandi; sesi web menyimpan `auth.pw` saat
+  login dan `EnsureAuthenticated` memutus sesi yang sidiknya berbeda — **reset sandi oleh admin
+  ikut memutus sesi web** user itu (admin yang mengganti sandinya sendiri tidak tertendang).
+- Ganti sandi, peran, atau status aktif — dan hapus user — mencabut semua token API & token
+  push user itu.
+- Login mengecek kata sandi **sebelum** status aktif; username tak dikenal tetap menjalankan
+  `Hash::check` tiruan supaya waktu respons tidak membocorkan keberadaannya.
 
 ### Konfigurasi & berkas
 
@@ -158,22 +169,27 @@ Di sisi keluaran:
 - `storage/app/firebase/service-account.json` dan `storage/logs/*.log` ber-mode **0640**.
 - Produksi memakai `route:cache` + `config:cache`; **keduanya wajib diperbarui setelah
   mengubah rute atau config**, kalau tidak perubahan tidak akan berlaku.
+- Header keamanan (HSTS, `X-Frame-Options`, CSP) dipasang di nginx, bukan di aplikasi. CSP
+  **ditegakkan** sejak 24 Sep 2026 (sebelumnya Report-Only). Skrip/stylesheet/sumber dari origin
+  yang belum diizinkan akan diblokir browser sampai CSP di nginx disesuaikan.
 
 ### Catatan tentang test
 
-`phpunit.xml` **tidak** diarahkan ke sqlite, sehingga menjalankan test di server ini
-berisiko menyasar database produksi. Verifikasi pengerasan di atas dilakukan manual lewat
-`curl`. Kalau suatu saat test suite dihidupkan, hal pertama yang harus dibereskan adalah
-mengarahkannya ke sqlite in-memory — pola yang sudah dipakai `scripts/test.sh` di Billing,
-NMS, MikroTik, dan IdP.
+Sejak 24 Sep 2026 test dijalankan **hanya** lewat `bash scripts/test.sh` (atau `composer test`).
+Skrip itu mengalihkan `APP_CONFIG_CACHE`/`APP_ROUTES_CACHE`/`APP_EVENTS_CACHE` ke path yang tidak
+ada, mengalihkan `FIREBASE_SERVICE_ACCOUNT_JSON`, lalu menolak jalan bila koneksi tidak resolve ke
+sqlite `:memory:`. `phpunit.xml` memuat pengalihan yang sama sebagai lapis kedua.
+
+**Jangan `php artisan test` polos** di server produksi: config cache menang atas `<env>` phpunit dan
+test ber-`RefreshDatabase` akan menjalankan `migrate:fresh` di MariaDB `netpulse`. Tabel inti lama
+(`snmp_devices`, `interfaces`, `users` berkolom username/role/is_active) tidak dibuat migrasi —
+test yang membutuhkannya menyiapkan sendiri (contoh `tests/Feature/SecurityHardeningTest::setUp`).
 
 ### Dependensi
 
-`composer audit` turun dari **42 → 3** advisori. Sisanya seluruhnya `laravel/framework` yang
-hanya diperbaiki di 12.x, dan keduanya tidak menyentuh aplikasi ini (rule `email` hanya di
-validasi internal; `signedRoute`/`temporarySignedRoute` tidak dipakai). Karena Composer 2.9
-memblokir seluruh 11.x akibat advisori itu, `composer.json` memasang
-`config.audit.block-insecure=false` — **wajib** agar pembaruan dalam `^11` bisa berjalan.
+Sejak 24 Sep 2026 `laravel/framework` **^12.0** (upgrade dari 11.56; cabang 11 sudah EOL) dan
+`composer audit` bersih. `composer.json` masih memasang `config.audit.block-insecure=false` —
+sisa masa 11.x, ketika Composer 2.9 memblokir seluruh 11.x akibat dua advisori framework.
 
 ## UI Web
 
@@ -200,10 +216,12 @@ Navigasi desktop:
 - `/dashboard`
 - `/monitoring`
 - `/devices`
+- `/interfaces`
+- `/sla`
 - `/map`
 - `/users`
 - `/settings`
-- `/logout`
+- Logout (form `POST /logout` ber-CSRF)
 
 ### Login
 
@@ -219,9 +237,9 @@ File:
 
 Fungsi:
 
-- Login berbasis username/password.
-- Auto re-hash password plaintext legacy jika password lama masih belum hash.
-- Menolak akun `is_active = 0`.
+- Login berbasis username/password (bcrypt; tidak ada lagi jalur plaintext).
+- Kata sandi dicek dulu, baru status aktif; akun `is_active = 0` ditolak.
+- Dibatasi limiter `login` (lihat [Pembatasan laju](#pembatasan-laju)).
 - Mencatat `LOGIN_SUCCESS` dan `LOGIN_FAILED`.
 
 ### Dashboard
@@ -305,8 +323,8 @@ API pendukung:
 - `POST /api/devices`
 - `DELETE /api/devices?id=<id>`
 - `GET /api/interfaces?device_id=<id>`
-- `GET /api/discover_interfaces?device_id=<id>`
-- `GET /api/huawei_discover_optics?device_id=<id>`
+- `POST /api/discover_interfaces` (`device_id`)
+- `POST /api/huawei_discover_optics` (`device_id`)
 
 ### Map
 
@@ -384,6 +402,8 @@ Tab/Fungsi:
 - Theme: light/dark dan warna primary/sidebar.
 - Logs: security log viewer.
 - Alert logs: filter, refresh, clear.
+- Vendor & Optik (admin saja): vendor per perangkat, override driver, profil OID optik — lihat
+  [Dukungan Vendor & Driver Optik](#dukungan-vendor--driver-optik).
 
 API pendukung:
 
@@ -401,13 +421,15 @@ Path:
 
 Versi:
 
-- `2.0.0+2`
+- `2.1.2+8` (24 Sep 2026) — ditandatangani kunci rilis sendiri. Pengguna APK lama (bertanda
+  tangan kunci debug) wajib menghapus aplikasi lalu memasang ulang sekali.
 
 Fitur:
 
 - Login API v1.
-- Dashboard.
+- Dashboard (Beranda).
 - Monitoring chart.
+- Daftar interface + riwayat trafik.
 - Network map.
 - Account/settings.
 - Alert log access.
@@ -418,10 +440,23 @@ Fitur:
 Default API base URL:
 
 ```text
-https://netpulse.bmkv.net
+https://netpulse.kusumavision.net
 ```
 
-User bisa mengubah API base URL dari screen account/settings mobile.
+Di build **rilis** base URL terkunci ke nilai bawaan (nilai tersimpan dari versi lama diabaikan);
+hanya build debug yang bisa mengubahnya dari screen account. Token Bearer disimpan di
+`flutter_secure_storage`, dan cleartext HTTP dimatikan di build rilis.
+
+Build rilis (yang dibagikan ke pengguna):
+
+```bash
+bash bin/build-apk.sh
+```
+
+Hasilnya APK split-per-abi di `public/downloads/`: `netpulse.apk` (arm64, yang disajikan
+`GET /download/app`) dan `netpulse-arm32.apk`. Build rilis gagal keras bila berkas kunci rilis
+tidak ada (path dari env `NETPULSE_KEY_PROPERTIES` atau `mobile/android/key.properties`, keduanya
+di luar git) — tidak ada lagi jatuh diam-diam ke kunci debug.
 
 Build debug:
 
@@ -449,9 +484,11 @@ Route list diverifikasi dengan `php artisan route:list`.
 | --- | --- | --- | --- |
 | GET | `/` | closure | Redirect ke `/login`. |
 | GET | `/login` | `AuthController@showLogin` | Form login. |
-| POST | `/login` | `AuthController@login` | Proses login. |
-| GET | `/logout` | `AuthController@logout` | Logout session. |
-| GET | `/up` | Laravel health route | Health check. |
+| POST | `/login` | `AuthController@login` | Proses login (limiter `login`). |
+| POST | `/logout` | `AuthController@logout` | Logout session (form ber-CSRF; `GET /logout` membalas 405). |
+| GET | `/healthz` | closure | Health check JSON (`status`, `database`); 503 bila MariaDB tidak terjangkau. Dipakai monitoring uptime. |
+| GET | `/download/app` | closure | Unduh APK terbaru (`public/downloads/netpulse.apk`, tanpa cache). `/downloads/netpulse.apk` sama. |
+| GET | `/up` | Laravel health route | Health check bawaan Laravel. |
 
 ### Protected Page Route
 
@@ -462,9 +499,11 @@ Semua route berikut memakai middleware `legacy.auth`.
 | GET | `/dashboard` | `DashboardController@index` | Dashboard NOC. |
 | GET | `/monitoring` | `MonitoringController@index` | Monitoring optical chart. |
 | GET | `/devices` | `DevicesController@index` | Device management dan discovery. |
+| GET | `/interfaces` | `InterfacesController@index` | Daftar interface lintas perangkat, status pantau, trafik. |
+| GET | `/sla` | `SlaController@index` | Laporan SLA + ekspor, kandidat port tidak dipakai. |
 | GET | `/map` | `MapController@index` | Interactive network map. |
 | GET | `/users` | `UsersController@index` | User management. |
-| GET | `/settings` | `SettingsController@index` | Telegram, alert, theme, logs. |
+| GET | `/settings` | `SettingsController@index` | Telegram, alert, theme, logs, Vendor & Optik. |
 
 ### Legacy Web API
 
@@ -486,14 +525,28 @@ Semua legacy endpoint berikut berada dalam group `legacy.auth` dan dipakai oleh 
 | ANY | `/api/map_nodes` | read semua role, write admin | CRUD node map. |
 | ANY | `/api/map_links` | read semua role, write admin | CRUD link map/path. |
 | GET | `/api/map_devices` | logged-in | Device yang belum terpasang di map. |
-| GET | `/api/discover_interfaces?device_id=...` | logged-in | Discovery SNMP interface. |
-| GET | `/api/huawei_discover_optics?device_id=...` | logged-in | Alias discovery untuk Huawei. |
+| POST | `/api/discover_interfaces` (`device_id`) | admin/technician/viewer | Discovery SNMP interface (viewer mendapat hasil dummy). |
+| POST | `/api/huawei_discover_optics` (`device_id`) | admin/technician/viewer | Alias discovery untuk Huawei. |
 | GET | `/api/settings` | admin/technician/viewer | Read settings, viewer dummy. |
 | POST | `/api/settings` | admin | Upsert settings. |
 | POST | `/api/telegram_test` | admin | Kirim pesan test Telegram. |
 | GET | `/api/logs?type=security` | admin/viewer | Security log, viewer dummy. |
 | GET | `/api/alert_logs` | admin/technician/viewer | List alert log. |
 | DELETE | `/api/alert_logs` | admin | Clear alert log. |
+| GET | `/api/dashboard/summary` | logged-in | Refresh KPI dashboard web. |
+| GET | `/api/interfaces/all` · `/api/interfaces/traffic_history` | logged-in | Daftar interface lintas perangkat & riwayat trafik. |
+| GET | `/api/interfaces/thresholds` | admin/technician/viewer | Ambang RX per interface. |
+| POST · DELETE | `/api/interfaces/thresholds` | admin | Simpan/hapus ambang RX per interface. |
+| POST | `/api/interfaces/monitoring` | admin | Tandai port tidak dipakai / pantau lagi (lihat [Port Tidak Dipakai](#port-tidak-dipakai)). |
+| GET | `/api/interfaces/monitoring/history` | admin/technician/viewer | Riwayat perubahan status pantau. |
+| GET | `/api/sla` · `/api/sla/events` · `/api/sla/candidates` | admin/technician/viewer | Ringkasan SLA, kejadian down, kandidat port tidak dipakai. |
+| GET | `/api/sla/export` · `/export-pdf` · `/interface/export` · `/interface/export-pdf` | admin/technician/viewer | Ekspor SLA CSV/PDF (ringkasan & per interface). |
+| GET | `/api/alert_mutes` | admin/technician/viewer | Daftar mute alert (jendela pemeliharaan). |
+| POST · DELETE | `/api/alert_mutes` | admin | Atur/hapus mute per perangkat atau global. |
+| GET | `/api/mobile_devices` · `/api/mobile_push_targets` | admin | Perangkat mobile terdaftar & target push. |
+| POST | `/api/mobile_push_send` | admin | Kirim push manual. |
+| DELETE | `/api/mobile_devices/{id}` | admin | Cabut perangkat mobile. |
+| GET · POST · DELETE | `/api/optical/*` | admin | Vendor & Optik (lihat [Dukungan Vendor & Driver Optik](#dukungan-vendor--driver-optik)). |
 | GET | `/api/data` | logged-in | Legacy placeholder realtime. |
 | GET | `/api/test_connection?id=...` | logged-in | Legacy placeholder test connection. |
 | GET | `/api/export?format=csv|json` | logged-in | Legacy placeholder export. |
@@ -538,11 +591,13 @@ Semua endpoint berikut memakai middleware `api.auth`.
 
 | Method | Path | Role | Body/Query | Fungsi |
 | --- | --- | --- | --- | --- |
-| POST | `/api/v1/auth/logout` | authenticated | none | Hapus token aktif. |
+| POST | `/api/v1/auth/logout` | authenticated | optional `fcm_token` | Hapus token aktif; `fcm_token` milik user dilepas. |
 | GET | `/api/v1/dashboard` | admin/technician/viewer | none | KPI dashboard. |
 | GET | `/api/v1/monitoring/devices` | admin/technician/viewer | none | Device aktif. |
 | GET | `/api/v1/monitoring/interfaces` | admin/technician/viewer | `device_id` | Interface SFP. |
 | GET | `/api/v1/monitoring/chart` | admin/technician/viewer | `device_id`, `if_index`, `range` | Chart optical history. |
+| GET | `/api/v1/interfaces` | admin/technician/viewer | `page`, `per_page`, `device_id`, `status`, `q`, `sort` | Daftar interface (viewer: dummy). |
+| GET | `/api/v1/interfaces/traffic-history` | admin/technician/viewer | `device_id`, `if_index`, `range` | Riwayat trafik interface (viewer: dummy). |
 | GET | `/api/v1/map/nodes` | admin/technician/viewer | optional `with_interfaces=1` | Node map. |
 | GET | `/api/v1/map/links` | admin/technician/viewer | none | Link map. |
 | GET | `/api/v1/alert-logs` | admin/technician/viewer | `limit`, `type`, `severity`, `q` | Alert log. |
@@ -554,7 +609,7 @@ Semua endpoint berikut memakai middleware `api.auth`.
 | POST | `/api/v1/alert-preferences` | authenticated | `push_enabled`, `severity_min` | Update preference push. |
 | POST | `/api/v1/device-token` | authenticated | `token`, optional `platform`, `device_name` | Register FCM token. |
 | POST | `/api/v1/location` | authenticated | `latitude`, `longitude`, optional `accuracy`, `recorded_at` | Simpan lokasi user. |
-| POST | `/api/v1/push/test` | authenticated | optional `title`, `body`, `token` | Kirim test FCM. |
+| POST | `/api/v1/push/test` | authenticated | optional `title`, `body` | Kirim test FCM ke token milik pemanggil sendiri (`token` di body diabaikan). |
 
 Range chart valid:
 
@@ -610,15 +665,12 @@ routes/console.php
 
 Jadwal aktif:
 
-```text
-* * * * * php artisan poll:interfaces
-```
-
-Definisi Laravel:
-
-```php
-Schedule::command('poll:interfaces')->everyMinute()->withoutOverlapping();
-```
+| Command | Jadwal | Fungsi |
+| --- | --- | --- |
+| `poll:interfaces --timeout=30` | tiap menit, `withoutOverlapping(10)` | Polling SNMP semua device, statistik, alert. |
+| `stats:rollup` | tiap jam (menit ke-5) | Agregasi sampel mentah ke rollup per jam. |
+| `stats:prune` | harian 03:30 | Hapus sampel mentah yang lewat masa simpan. |
+| `optical:degradation` | harian 06:00 | Deteksi link dengan daya optik menurun. |
 
 Command:
 
@@ -627,7 +679,12 @@ php artisan poll:interfaces
 php artisan poll:interfaces --device=1
 php artisan schedule:list
 php artisan schedule:run
+php artisan sla:reconcile            # dry run; --apply untuk menutup kejadian SLA basi
 ```
+
+Produksi menjalankan scheduler lewat `/etc/cron.d/netpulse` (user `www-data`, `schedule:run` tiap
+menit, lalu detak `kv-beat netpulse-schedule` untuk pemantauan server). Script cron di bawah adalah
+alternatif untuk instalasi lain.
 
 Script cron:
 
@@ -653,7 +710,7 @@ Polling melakukan:
 1. Ambil semua device aktif dari `snmp_devices`.
 2. Jalankan `InterfaceDiscovery::discover($deviceId, true)`.
 3. Walk IF-MIB untuk index, name, description, alias, oper status.
-4. Ambil optical power untuk MikroTik dan Huawei jika tersedia.
+4. Ambil optical power lewat driver optik (lihat [Dukungan Vendor & Driver Optik](#dukungan-vendor--driver-optik)).
 5. Upsert snapshot ke `interfaces`.
 6. Insert history ke `interface_stats`.
 7. Deteksi transisi device/interface up/down dan RX warning.
@@ -717,6 +774,11 @@ Kolom lama `interfaces.is_monitored` (bawaan `1`) kini dipakai sungguhan:
   `SlaController::UNUSED_CANDIDATE_DAYS` (7) hari; tampil sebagai panel di halaman SLA.
 - Poller membuang state alert port yang tidak dipakai, sehingga saat dipantau lagi ia mulai bersih
   (tanpa alert transisi dari keadaan lama).
+- Port yang **tidak lagi dilaporkan perangkat** lebih dari 24 jam (setelah walk lengkap) ditandai
+  tidak dipakai oleh `system` (`InterfaceDiscovery::reconcileVanishedPorts()`); bila dilaporkan lagi,
+  otomatis dipantau kembali. Port yang ditandai admin tetap nonaktif. Barisnya tidak dihapus.
+- Kejadian down yang masih terbuka ditutup poller begitu link terlihat up, tanpa menunggu transisi
+  di state alert. Riwayat lama yang basi diperbaiki dengan `php artisan sla:reconcile`.
 
 ## Database
 
@@ -998,7 +1060,7 @@ Cek role user:
 ```bash
 php artisan route:list
 php artisan schedule:list
-php artisan test
+bash scripts/test.sh      # JANGAN `php artisan test` polos — lihat Catatan tentang test
 npm run build
 git status --short
 ```

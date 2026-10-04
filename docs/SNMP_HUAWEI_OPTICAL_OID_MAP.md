@@ -2,6 +2,20 @@
 
 Terakhir diperbarui: 13 April 2026
 
+> **Catatan keberlakuan (4 Okt 2026).** Dokumen ini ditulis untuk modul `SNMP Monitor` lain.
+> Rujukan kodenya — `SNMPManager`, `SnmpController`, perintah `snmp:poll-optical-due`, tabel
+> `snmp_optical` / `snmp_optical_history` / `snmp_interfaces` — **tidak ada di repo Netpulse**.
+> Yang tetap berlaku: OID Huawei (`hwEntityOpticalRxPower` `.8` / `hwEntityOpticalTxPower` `.9`
+> di bawah `1.3.6.1.4.1.2011.5.25.31.1.1.3.1`), sifat indeks `entPhysicalIndex`, pemetaan lewat
+> `entAliasMappingIdentifier`, dan aturan normalisasi daya hibrida (≤ 0 → 0,01 dBm, > 0 → µW).
+>
+> Implementasi Netpulse ada di `app/Services/Optical/HuaweiDriver.php` + `EntityAliasMap.php`, dan
+> berbeda dari uraian di bawah: hanya RX/TX yang dibaca (suhu, tegangan, bias tidak); port yang
+> `entPhysicalIndex`-nya tak terpetakan ke `ifIndex`/`ifName` dilewati (tanpa fallback
+> `entPhysicalName`/`entPhysicalDescr`/`Entity <index>`); nilai di luar -60…10 dBm dibuang; hasilnya
+> disimpan ke `interfaces` dan `interface_stats`. Lihat `docs/NETPULSE_DOCUMENTATION.md` bagian
+> "Dukungan Vendor & Driver Optik".
+
 Dokumen ini memetakan OID Huawei yang benar-benar dipakai oleh modul `SNMP Monitor` BMKV untuk tab `Optical Analytics`, dengan fokus pada switch Huawei. Tujuannya adalah membuat tim NOC dan developer bisa menelusuri alur data dari `snmpwalk` mentah sampai tampil di UI, tanpa harus menebak unit raw, suffix index, atau relasi `entPhysicalIndex` ke nama port.
 
 ## 1. Scope Implementasi di BMKV

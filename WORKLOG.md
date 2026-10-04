@@ -4,6 +4,28 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-10-04 — Docs: Dokumentasi Disinkronkan dengan Keadaan Produksi
+
+- **Changed (`docs/NETPULSE_DOCUMENTATION.md`)**: Laravel 11 → 12; catatan test lama ("phpunit tidak
+  diarahkan ke sqlite") diganti `scripts/test.sh`, dan **checklist rilis tidak lagi menyuruh
+  `php artisan test` polos**; bagian Dependensi mengikuti upgrade 24 Sep; limiter login 20/menit per IP +
+  `optical-snmp`; reset sandi memutus sesi web (26 Sep), pencabutan token, urutan cek sandi; CSP ditegakkan
+  di nginx; login tidak lagi "auto re-hash plaintext"; navigasi + rute halaman `/interfaces` & `/sla`;
+  rute publik `POST /logout`, `/healthz`, `/download/app`; discovery `GET` → `POST`; ±15 baris API web yang
+  belum tercatat (SLA, thresholds, monitoring, alert mutes, mobile push, optical); API v1 `/interfaces` &
+  `traffic-history`, `push/test` mengabaikan `token`, logout menerima `fcm_token`; tabel empat jadwal
+  scheduler + cron produksi `/etc/cron.d/netpulse`; port hilang otomatis & `sla:reconcile`; aplikasi
+  mobile 2.1.2+8, base URL `netpulse.kusumavision.net` terkunci di rilis, build lewat `bin/build-apk.sh`.
+- **Changed (`docs/SNMP_HUAWEI_OPTICAL_OID_MAP.md`)**: catatan keberlakuan di atas — rujukan kode
+  (`SNMPManager`, `snmp_optical`, `snmp:poll-optical-due`) berasal dari modul lain dan tidak ada di repo ini;
+  OID & normalisasi daya tetap berlaku, implementasi Netpulse = `HuaweiDriver` + `EntityAliasMap`.
+- **Changed (`mobile/README.md`)**: versi 2.0.0+2 → 2.1.2+8, build rilis wajib kunci sendiri (split-per-abi),
+  base URL terkunci di rilis, token di secure storage.
+- **Changed (`CLAUDE.md`)**: cron + `kv-beat`, daftar jadwal, tanpa Redis (file/sync), CSP di snippet nginx,
+  branch `main` ↔ `origin/main` publik, lokasi & versi APK.
+- **Notes**: hanya dokumen; tidak ada kode, config, atau test yang disentuh. Tidak ada IP internal, nama
+  perangkat, atau kredensial yang ditambahkan (repo publik).
+
 ## 2026-10-03 — Notes: `fix/up-alert-cooldown` Digabung ke `main`
 
 - **Notes**: produksi berjalan di branch `fix/up-alert-cooldown` (= `main` + `670d3ef` reset sandi memutus sesi

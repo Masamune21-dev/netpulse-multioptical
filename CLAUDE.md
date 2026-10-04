@@ -19,7 +19,11 @@ bash bin/build-apk.sh                # Kompilasi Flutter APK (hasil: public/down
 - **Database**: MariaDB `netpulse` di `127.0.0.1:3306`.
 - **Runtime**: PHP 8.3-FPM (`/run/php/php8.3-fpm.sock`).
 - **Nginx & SSL**: `/etc/nginx/sites-available/netpulse.kusumavision.net` memakai wildcard SSL `/etc/nginx/ssl/kusumavision.wildcard.pem`.
-- **Scheduler**: Cron di `/etc/cron.d/netpulse` (`* * * * * www-data php .../artisan schedule:run`). Poller men-dispatch paralel 23 router/switch via SNMP.
+- **Scheduler**: Cron di `/etc/cron.d/netpulse` (`* * * * * www-data php .../artisan schedule:run && /usr/local/bin/kv-beat netpulse-schedule` — detak untuk pemantauan server). Jadwal di `routes/console.php`: `poll:interfaces` tiap menit, `stats:rollup` tiap jam, `stats:prune` 03:30, `optical:degradation` 06:00. Poller men-dispatch paralel 23 router/switch via SNMP.
+- **Tanpa Redis**: `SESSION_DRIVER=file`, `CACHE_STORE=file`, `QUEUE_CONNECTION=sync` (push FCM terkirim sinkron). `/healthz` hanya memeriksa MariaDB.
+- **Header keamanan & CSP**: dipasang nginx lewat `snippets/netpulse-headers.conf` (di luar repo); CSP **ditegakkan** sejak 24 Sep 2026 — sumber skrip/gaya dari origin baru wajib diizinkan di sana dulu.
+- **Git**: produksi di branch `main`, upstream `origin/main` = `github.com/Masamune21-dev/netpulse-multioptical` (PUBLIK). Branch `fix/up-alert-cooldown` sudah digabung ke `main` (3 Okt 2026).
+- **APK**: versi di `mobile/pubspec.yaml` (kini `2.1.2+8`); `bin/build-apk.sh` menghasilkan split-per-abi `public/downloads/netpulse.apk` (arm64) + `netpulse-arm32.apk`, diunduh lewat `/download/app`.
 - **Mobile Toolchain**: Flutter 3.44 di `/opt/flutter` + Android SDK di `/opt/android-sdk`. `google-services.json` di `mobile/android/app/` (di-.gitignore). Kunci rilis APK di `/root/.kv-keystores/` (di luar repo, ikut backup GPG `kv-backup-all.sh`); `bin/build-apk.sh` menolak build tanpa kunci itu.
 
 ## Aturan Baku AI Agent
