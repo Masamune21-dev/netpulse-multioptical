@@ -16,6 +16,12 @@ class InterfaceDiscovery
     /** Ports not reported by the device for this long are auto-retired (see reconcileVanishedPorts). */
     private const VANISHED_AFTER_HOURS = 24;
 
+    /**
+     * Peran yang menerima push alert produksi. Viewer adalah akun demo (semua layarnya
+     * berisi data dummy), jadi tidak boleh menerima nama perangkat/port/alias asli lewat push.
+     */
+    public const PUSH_ROLES = ['admin', 'technician'];
+
     private static bool $alertLogTableChecked = false;
 
     public function discover(int $deviceId, bool $isCli = false): array
@@ -1105,11 +1111,16 @@ class InterfaceDiscovery
             return;
         }
 
+        // Hanya token milik akun aktif ber-peran admin/technician. Dulu SEMUA baris
+        // device_tokens dikirimi, termasuk HP akun viewer (demo) dan akun yang sudah
+        // dinonaktifkan admin; token yang user-nya sudah dihapus juga ikut (tanpa JOIN).
         $tokens = DB::table('device_tokens')
-            ->select(['token', 'user_id', 'last_seen_at'])
-            ->whereNotNull('token')
-            ->orderByDesc('last_seen_at')
-            ->get();
+            ->join('users', 'users.id', '=', 'device_tokens.user_id')
+            ->whereIn('users.role', self::PUSH_ROLES)
+            ->where('users.is_active', 1)
+            ->whereNotNull('device_tokens.token')
+            ->orderByDesc('device_tokens.last_seen_at')
+            ->get(['device_tokens.token', 'device_tokens.user_id', 'device_tokens.last_seen_at']);
 
         if ($tokens->isEmpty()) {
             return;

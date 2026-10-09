@@ -33,7 +33,7 @@ class DashboardController extends Controller
                     'device_health'    => $dh,
                     'worst_ports'      => collect(ViewerDummyData::dashboardWorstPorts())->map(fn($p) => (array)$p)->values()->all(),
                     'recent_alerts'    => collect(ViewerDummyData::dashboardRecentAlerts())->map(fn($a) => (array)$a)->values()->all(),
-                    'thresholds'       => RxThresholds::global(),
+                    'thresholds'       => ViewerDummyData::globalRxThresholds(),
                 ],
             ]);
         }

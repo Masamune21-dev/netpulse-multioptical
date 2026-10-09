@@ -4,6 +4,45 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-10-09 — Fixed: Kebocoran Data Produksi ke Role `viewer` (Akun Demo)
+
+- **Fixed (laporan SLA)**: `/api/sla`, `/api/sla/events`, `/api/sla/candidates`, ekspor CSV/PDF ringkasan
+  dan per-interface tidak punya cabang viewer — akun demo membaca seluruh `interface_down_events` produksi
+  (ribuan kejadian, alias berisi nama mitra) dan menu "SLA Report" tampil untuk semua peran. Kini viewer
+  mendapat kejadian dummy dari `ViewerDummyData::slaDownEvents()` (perangkat 101–104 & port yang sama
+  dengan layar dummy lain, waktu relatif terhadap sekarang); agregasi meniru query asli (jendela, potong
+  awal jendela, `HAVING down_count > 0`, urutan), filter perangkat/pencarian tetap jalan, dan ekspor
+  CSV/PDF dibuat dari data itu (cakupan PDF tidak lagi membaca `snmp_devices`). `SlaController`: query
+  MySQL dipindah ke `summaryRows()`/`eventRows()` (yang kedua juga dipakai `interfacePayload()`, dulu
+  SQL-nya tergandakan); perhitungan ketersediaan tetap satu kode untuk semua peran.
+- **Fixed (`/api/interfaces/traffic_history`)**: cek viewer ada di bawah query interface, dan jalur "tabel
+  statistik belum ada" kembali lebih dulu — meta (nama/IP perangkat, alias, status) yang dikirim tetap
+  asli untuk `device_id` produksi mana pun. Cek dipindah ke awal; viewer memakai
+  `ViewerDummyData::apiTrafficHistory()` (sama dengan API mobile, kini meta mengikuti perangkat/port dummy
+  yang diminta lewat `interfaceMeta()`). Daftar interface dummy web memakai perangkat 101–104 (dulu
+  "Demo Device 1–3", tidak cocok dengan filter perangkat & modal).
+- **Fixed (GET tanpa cabang viewer)**: `/api/interfaces/thresholds` (meta, ambang global, override, saran
+  baseline → semua dummy), `/api/interfaces/monitoring/history` (dulu berisi alasan + username
+  `changed_by` → kosong), `/api/alert_mutes` (catatan pemeliharaan → satu mute rekaan).
+- **Fixed (push alert)**: `InterfaceDiscovery::sendMobilePush()` mengirim ke **semua** baris
+  `device_tokens`. Kini JOIN `users`: hanya akun `is_active = 1` ber-peran `admin`/`technician`
+  (`InterfaceDiscovery::PUSH_ROLES`) — sekaligus menutup push ke akun nonaktif dan token yatim (user
+  terhapus). Berlaku juga untuk alert degradasi harian (`optical:degradation`).
+- **Fixed (API mobile)**: `POST /api/v1/device-token` untuk viewer membalas sukses tanpa menyimpan (APK
+  mendaftar otomatis saat login); baris lama token HP itu — milik viewer sendiri atau akun lain yang sudah
+  logout di semua perangkat (HP bersama) — dilepas. Penjaga 409 token milik akun lain yang masih login
+  tetap berlaku. `POST /api/v1/location` untuk viewer: sukses tanpa menyimpan.
+- **Fixed (sapuan)**: `/api/v1/dashboard` & `/api/v1/interfaces` viewer memakai ambang RX dummy
+  (`ViewerDummyData::globalRxThresholds()`), bukan nilai `settings` produksi. Sapuan semua rute GET web &
+  API v1 lainnya: sudah bercabang viewer / khusus admin / tanpa data.
+- **Changed (`docs/NETPULSE_DOCUMENTATION.md`)**: matriks peran (baris SLA, push, lokasi), tabel API web &
+  v1 ditandai perilaku viewer, bagian Keamanan mencatat penerima push alert.
+- **Notes**: test baru `ViewerDummyIsolationTest` (14) — fixture "produksi" bertanda, viewer diuji tak
+  menerima penanda itu, admin/teknisi diuji tetap mendapat data asli; 13 di antaranya gagal pada kode
+  sebelum perbaikan. `InterfaceMonitoringTest` kandidat SLA kini memakai teknisi (viewer = dummy). Jalur
+  admin ringkasan/kejadian SLA memakai SQL MySQL dan tetap tak teruji di sqlite. Suite 67 lulus. Tidak ada
+  migrasi/rute baru; poller jalan per menit lewat cron (`schedule:run`), tidak ada daemon untuk di-restart.
+
 ## 2026-10-04 — Docs: Dokumentasi Disinkronkan dengan Keadaan Produksi
 
 - **Changed (`docs/NETPULSE_DOCUMENTATION.md`)**: Laravel 11 → 12; catatan test lama ("phpunit tidak

@@ -84,8 +84,10 @@ Content-Type: application/json
 | Users | Read/create/update/delete | Read | Dummy/read-limited |
 | Settings | Read/write | Read | Dummy/read-limited |
 | Alert logs | Read/delete | Read | Read dummy/demo data |
+| SLA report (+ ekspor CSV/PDF) | Read | Read | Read dummy/demo data |
 | Security logs | Read | Forbidden | Dummy/read-limited |
-| Mobile push/location | Authenticated user | Authenticated user | Authenticated user |
+| Push alert (FCM) | Diterima (akun aktif) | Diterima (akun aktif) | Tidak — token tidak disimpan |
+| Lokasi mobile | Disimpan | Disimpan | Dijawab sukses, tidak disimpan |
 
 Catatan: beberapa tombol create/edit/delete juga disembunyikan dari UI memakai `body[data-role]`, tetapi pembatasan utama tetap di controller/middleware.
 
@@ -160,6 +162,10 @@ Di sisi keluaran:
   ikut memutus sesi web** user itu (admin yang mengganti sandinya sendiri tidak tertendang).
 - Ganti sandi, peran, atau status aktif — dan hapus user — mencabut semua token API & token
   push user itu.
+- Push alert otomatis (poller & `optical:degradation`) hanya dikirim ke token milik akun
+  `is_active = 1` ber-peran `admin`/`technician` (`InterfaceDiscovery::PUSH_ROLES`, sejak 9 Okt 2026).
+  Viewer adalah akun demo: semua endpoint baca menyajikan data dummy (`ViewerDummyData`), token
+  FCM & lokasinya tidak disimpan.
 - Login mengecek kata sandi **sebelum** status aktif; username tak dikenal tetap menjalankan
   `Hash::check` tiruan supaya waktu respons tidak membocorkan keberadaannya.
 
@@ -534,14 +540,14 @@ Semua legacy endpoint berikut berada dalam group `legacy.auth` dan dipakai oleh 
 | GET | `/api/alert_logs` | admin/technician/viewer | List alert log. |
 | DELETE | `/api/alert_logs` | admin | Clear alert log. |
 | GET | `/api/dashboard/summary` | logged-in | Refresh KPI dashboard web. |
-| GET | `/api/interfaces/all` · `/api/interfaces/traffic_history` | logged-in | Daftar interface lintas perangkat & riwayat trafik. |
-| GET | `/api/interfaces/thresholds` | admin/technician/viewer | Ambang RX per interface. |
+| GET | `/api/interfaces/all` · `/api/interfaces/traffic_history` | logged-in | Daftar interface lintas perangkat & riwayat trafik (viewer: dummy). |
+| GET | `/api/interfaces/thresholds` | admin/technician/viewer | Ambang RX per interface (viewer: dummy). |
 | POST · DELETE | `/api/interfaces/thresholds` | admin | Simpan/hapus ambang RX per interface. |
 | POST | `/api/interfaces/monitoring` | admin | Tandai port tidak dipakai / pantau lagi (lihat [Port Tidak Dipakai](#port-tidak-dipakai)). |
-| GET | `/api/interfaces/monitoring/history` | admin/technician/viewer | Riwayat perubahan status pantau. |
-| GET | `/api/sla` · `/api/sla/events` · `/api/sla/candidates` | admin/technician/viewer | Ringkasan SLA, kejadian down, kandidat port tidak dipakai. |
-| GET | `/api/sla/export` · `/export-pdf` · `/interface/export` · `/interface/export-pdf` | admin/technician/viewer | Ekspor SLA CSV/PDF (ringkasan & per interface). |
-| GET | `/api/alert_mutes` | admin/technician/viewer | Daftar mute alert (jendela pemeliharaan). |
+| GET | `/api/interfaces/monitoring/history` | admin/technician/viewer | Riwayat perubahan status pantau (viewer: kosong). |
+| GET | `/api/sla` · `/api/sla/events` · `/api/sla/candidates` | admin/technician/viewer | Ringkasan SLA, kejadian down, kandidat port tidak dipakai (viewer: dummy). |
+| GET | `/api/sla/export` · `/export-pdf` · `/interface/export` · `/interface/export-pdf` | admin/technician/viewer | Ekspor SLA CSV/PDF (ringkasan & per interface; viewer: dari data dummy). |
+| GET | `/api/alert_mutes` | admin/technician/viewer | Daftar mute alert (jendela pemeliharaan; viewer: dummy). |
 | POST · DELETE | `/api/alert_mutes` | admin | Atur/hapus mute per perangkat atau global. |
 | GET | `/api/mobile_devices` · `/api/mobile_push_targets` | admin | Perangkat mobile terdaftar & target push. |
 | POST | `/api/mobile_push_send` | admin | Kirim push manual. |
@@ -592,7 +598,7 @@ Semua endpoint berikut memakai middleware `api.auth`.
 | Method | Path | Role | Body/Query | Fungsi |
 | --- | --- | --- | --- | --- |
 | POST | `/api/v1/auth/logout` | authenticated | optional `fcm_token` | Hapus token aktif; `fcm_token` milik user dilepas. |
-| GET | `/api/v1/dashboard` | admin/technician/viewer | none | KPI dashboard. |
+| GET | `/api/v1/dashboard` | admin/technician/viewer | none | KPI dashboard (viewer: dummy). |
 | GET | `/api/v1/monitoring/devices` | admin/technician/viewer | none | Device aktif. |
 | GET | `/api/v1/monitoring/interfaces` | admin/technician/viewer | `device_id` | Interface SFP. |
 | GET | `/api/v1/monitoring/chart` | admin/technician/viewer | `device_id`, `if_index`, `range` | Chart optical history. |
@@ -607,8 +613,8 @@ Semua endpoint berikut memakai middleware `api.auth`.
 | POST | `/api/v1/settings` | admin | arbitrary key/value JSON | Upsert settings. |
 | GET | `/api/v1/alert-preferences` | authenticated | none | Mobile alert preference per user. |
 | POST | `/api/v1/alert-preferences` | authenticated | `push_enabled`, `severity_min` | Update preference push. |
-| POST | `/api/v1/device-token` | authenticated | `token`, optional `platform`, `device_name` | Register FCM token. |
-| POST | `/api/v1/location` | authenticated | `latitude`, `longitude`, optional `accuracy`, `recorded_at` | Simpan lokasi user. |
+| POST | `/api/v1/device-token` | authenticated | `token`, optional `platform`, `device_name` | Register FCM token (viewer: sukses tanpa disimpan; baris lama token itu dilepas). |
+| POST | `/api/v1/location` | authenticated | `latitude`, `longitude`, optional `accuracy`, `recorded_at` | Simpan lokasi user (viewer: sukses tanpa disimpan). |
 | POST | `/api/v1/push/test` | authenticated | optional `title`, `body` | Kirim test FCM ke token milik pemanggil sendiri (`token` di body diabaikan). |
 
 Range chart valid:

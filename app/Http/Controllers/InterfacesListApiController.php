@@ -168,6 +168,13 @@ class InterfacesListApiController extends Controller
             return response()->json(['success' => false, 'error' => 'Missing device_id or if_index'], 400);
         }
 
+        // Viewer (akun demo) dijawab sebelum tabel produksi disentuh. Dulu cek ini ada di
+        // bawah query interface sehingga meta (nama/IP perangkat, alias port, status) yang
+        // dikirim tetap milik perangkat asli — cukup menebak device_id produksi.
+        if (ViewerDummyData::isViewer($request)) {
+            return response()->json(['success' => true] + ViewerDummyData::apiTrafficHistory($deviceId, $ifIndex, $range));
+        }
+
         // Short ranges read raw per-minute rows (kept ~30 days); longer ranges
         // read rollup tables so history survives after raw is pruned.
         [$intervalSql, $source] = match ($range) {
@@ -204,15 +211,6 @@ class InterfacesListApiController extends Controller
                 'success' => true,
                 'meta' => $this->ifaceMeta($iface, $range),
                 'data' => [],
-                'summary' => $this->emptySummary(),
-            ]);
-        }
-
-        if (ViewerDummyData::isViewer($request)) {
-            return response()->json([
-                'success' => true,
-                'meta' => $this->ifaceMeta($iface, $range),
-                'data' => $this->dummyTrafficSeries($range),
                 'summary' => $this->emptySummary(),
             ]);
         }
@@ -316,37 +314,22 @@ class InterfacesListApiController extends Controller
         ];
     }
 
-    private function dummyTrafficSeries(string $range): array
-    {
-        $points = ['1d' => 144, '7d' => 168, '30d' => 180][$range] ?? 144;
-        $stepSec = ['1d' => 600, '7d' => 3600, '30d' => 14400][$range] ?? 600;
-        $now = time();
-        $out = [];
-        for ($i = $points - 1; $i >= 0; $i--) {
-            $t = date('Y-m-d H:i:s', $now - ($i * $stepSec));
-            $base = 300_000_000 + sin($i / 6.0) * 200_000_000;
-            $out[] = [
-                'created_at' => $t,
-                'in_rate_bps' => max(0, (int) ($base + random_int(-50_000_000, 50_000_000))),
-                'out_rate_bps' => max(0, (int) ($base * 0.08 + random_int(-5_000_000, 5_000_000))),
-            ];
-        }
-        return $out;
-    }
-
     private function dummyResponse(int $perPage, int $page, int $deviceId, string $status, string $q)
     {
-        $devices = $deviceId > 0 ? [$deviceId] : [1, 2, 3];
+        // Perangkat sama dengan /api/monitoring_devices (filter perangkat di halaman ini) dan
+        // modal grafik trafik, supaya nama di tabel dan di modal tidak berbeda.
+        $devices = $deviceId > 0 ? [$deviceId] : array_column(ViewerDummyData::devices(), 'id');
         $all = [];
         foreach ($devices as $dId) {
             foreach (ViewerDummyData::interfaces($dId) as $iface) {
                 if (!($iface['is_sfp'] ?? 0)) {
                     continue;
                 }
+                $meta = ViewerDummyData::interfaceMeta($dId, (int) $iface['if_index']);
                 $all[] = array_merge($iface, [
                     'device_id' => $dId,
-                    'device_name' => 'Demo Device ' . $dId,
-                    'device_ip' => '10.0.0.' . $dId,
+                    'device_name' => $meta['device_name'],
+                    'device_ip' => $meta['device_ip'],
                     'if_speed' => 1000000000,
                     'in_rate_bps' => random_int(1_000_000, 500_000_000),
                     'out_rate_bps' => random_int(1_000_000, 500_000_000),

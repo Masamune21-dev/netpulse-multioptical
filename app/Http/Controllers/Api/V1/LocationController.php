@@ -20,6 +20,11 @@ class LocationController extends Controller
 
         $user = $request->user();
 
+        // Viewer = akun demo: lokasi HP tidak dicatat (APK tetap menerima sukses).
+        if ((string) ($user->role ?? '') === 'viewer') {
+            return response()->json(['success' => true]);
+        }
+
         $recordedAt = null;
         if (!empty($data['recorded_at'])) {
             $recordedAt = Carbon::parse($data['recorded_at']);

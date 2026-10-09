@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\ViewerDummyData;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -25,6 +26,29 @@ class InterfaceThresholdsController extends Controller
         $ifIndex = (int) $request->query('if_index', 0);
         if ($deviceId <= 0 || $ifIndex <= 0) {
             return response()->json(['success' => false, 'error' => 'Missing device_id or if_index'], 400);
+        }
+
+        // Viewer (akun demo): meta port, ambang global, override, dan saran baseline semuanya
+        // rekaan — dulu nama perangkat, alias, RX terkini, dan override produksi ikut terkirim.
+        if (ViewerDummyData::isViewer($request)) {
+            $meta = ViewerDummyData::interfaceMeta($deviceId, $ifIndex);
+            $global = ViewerDummyData::rxThresholds();
+
+            return response()->json([
+                'success' => true,
+                'meta' => [
+                    'device_id' => $deviceId,
+                    'if_index' => $ifIndex,
+                    'device_name' => $meta['device_name'],
+                    'if_name' => $meta['if_name'],
+                    'if_alias' => $meta['if_alias'],
+                    'current_rx' => $meta['rx_power'] !== null ? (float) $meta['rx_power'] : null,
+                ],
+                'global' => $global,
+                'override' => ['rx_warn_high' => null, 'rx_warn_low' => null, 'rx_down_threshold' => null],
+                'effective' => $global,
+                'suggestion' => ['available' => false],
+            ]);
         }
 
         $iface = DB::table('interfaces')

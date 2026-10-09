@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\ViewerDummyData;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -10,6 +11,9 @@ use Illuminate\Support\Facades\DB;
  * SLA / uptime report from interface_down_events: which interfaces went down,
  * how often over a period, total downtime and availability, plus a per-event
  * drilldown (each down's start/end/duration).
+ *
+ * Viewer (akun demo) mendapat kejadian dummy dari ViewerDummyData di semua endpoint,
+ * termasuk ekspor CSV/PDF — perhitungan ringkasan/ketersediaan tetap kode yang sama.
  */
 class SlaController extends Controller
 {
@@ -25,41 +29,9 @@ class SlaController extends Controller
         $deviceId = (int) $request->query('device_id', 0);
         $q = trim((string) $request->query('q', ''));
 
-        $bindings = [];
-        $where = ["COALESCE(up_at, NOW()) >= NOW() - INTERVAL {$days} DAY"];
-        if ($deviceId > 0) {
-            $where[] = 'device_id = ?';
-            $bindings[] = $deviceId;
-        }
-        if ($q !== '') {
-            $where[] = '(device_name LIKE ? OR if_name LIKE ? OR if_alias LIKE ?)';
-            $like = '%' . $q . '%';
-            array_push($bindings, $like, $like, $like);
-        }
-        // Port yang ditandai tidak dipakai keluar dari laporan (dan ekspornya), kecuali
-        // diminta eksplisit. Riwayat per-interface tetap bisa dibuka lewat events().
-        if (!$request->boolean('include_unmonitored')) {
-            $where[] = 'NOT EXISTS (SELECT 1 FROM interfaces i WHERE i.device_id = interface_down_events.device_id AND i.if_index = interface_down_events.if_index AND i.is_monitored = 0)';
-        }
-        $whereSql = implode(' AND ', $where);
-
-        $rows = DB::select("
-            SELECT device_id, if_index,
-                   MAX(device_name) AS device_name,
-                   MAX(if_name) AS if_name,
-                   MAX(if_alias) AS if_alias,
-                   SUM(CASE WHEN down_at >= NOW() - INTERVAL {$days} DAY THEN 1 ELSE 0 END) AS down_count,
-                   SUM(GREATEST(0, TIMESTAMPDIFF(SECOND,
-                        GREATEST(down_at, NOW() - INTERVAL {$days} DAY),
-                        COALESCE(up_at, NOW())))) AS down_sec,
-                   MAX(CASE WHEN up_at IS NULL THEN 1 ELSE 0 END) AS still_down,
-                   MAX(down_at) AS last_down_at
-            FROM interface_down_events
-            WHERE {$whereSql}
-            GROUP BY device_id, if_index
-            HAVING down_count > 0
-            ORDER BY down_count DESC, down_sec DESC
-        ", $bindings);
+        $rows = ViewerDummyData::isViewer($request)
+            ? ViewerDummyData::slaSummaryRows($days, $deviceId, $q)
+            : $this->summaryRows($request, $days, $deviceId, $q);
 
         $windowSec = $days * 86400;
         $data = array_map(function ($r) use ($windowSec) {
@@ -90,6 +62,46 @@ class SlaController extends Controller
                 'down_sec' => array_sum(array_column($data, 'down_sec')),
             ],
         ]);
+    }
+
+    /** Per-interface aggregate rows from interface_down_events (MySQL). */
+    private function summaryRows(Request $request, int $days, int $deviceId, string $q): array
+    {
+        $bindings = [];
+        $where = ["COALESCE(up_at, NOW()) >= NOW() - INTERVAL {$days} DAY"];
+        if ($deviceId > 0) {
+            $where[] = 'device_id = ?';
+            $bindings[] = $deviceId;
+        }
+        if ($q !== '') {
+            $where[] = '(device_name LIKE ? OR if_name LIKE ? OR if_alias LIKE ?)';
+            $like = '%' . $q . '%';
+            array_push($bindings, $like, $like, $like);
+        }
+        // Port yang ditandai tidak dipakai keluar dari laporan (dan ekspornya), kecuali
+        // diminta eksplisit. Riwayat per-interface tetap bisa dibuka lewat events().
+        if (!$request->boolean('include_unmonitored')) {
+            $where[] = 'NOT EXISTS (SELECT 1 FROM interfaces i WHERE i.device_id = interface_down_events.device_id AND i.if_index = interface_down_events.if_index AND i.is_monitored = 0)';
+        }
+        $whereSql = implode(' AND ', $where);
+
+        return DB::select("
+            SELECT device_id, if_index,
+                   MAX(device_name) AS device_name,
+                   MAX(if_name) AS if_name,
+                   MAX(if_alias) AS if_alias,
+                   SUM(CASE WHEN down_at >= NOW() - INTERVAL {$days} DAY THEN 1 ELSE 0 END) AS down_count,
+                   SUM(GREATEST(0, TIMESTAMPDIFF(SECOND,
+                        GREATEST(down_at, NOW() - INTERVAL {$days} DAY),
+                        COALESCE(up_at, NOW())))) AS down_sec,
+                   MAX(CASE WHEN up_at IS NULL THEN 1 ELSE 0 END) AS still_down,
+                   MAX(down_at) AS last_down_at
+            FROM interface_down_events
+            WHERE {$whereSql}
+            GROUP BY device_id, if_index
+            HAVING down_count > 0
+            ORDER BY down_count DESC, down_sec DESC
+        ", $bindings);
     }
 
     /** GET /api/sla/export — CSV of the per-interface SLA summary. */
@@ -138,7 +150,10 @@ class SlaController extends Controller
         $deviceId = (int) $request->query('device_id', 0);
         $scope = 'All devices';
         if ($deviceId > 0) {
-            $scope = (string) (DB::table('snmp_devices')->where('id', $deviceId)->value('device_name') ?? ('Device #' . $deviceId));
+            $name = ViewerDummyData::isViewer($request)
+                ? (ViewerDummyData::device($deviceId)['device_name'] ?? null)
+                : DB::table('snmp_devices')->where('id', $deviceId)->value('device_name');
+            $scope = (string) ($name ?? ('Device #' . $deviceId));
         }
 
         $pdf = Pdf::loadView('sla.pdf', [
@@ -185,6 +200,10 @@ class SlaController extends Controller
     public function candidates(Request $request)
     {
         $minDays = self::UNUSED_CANDIDATE_DAYS;
+        if (ViewerDummyData::isViewer($request)) {
+            return response()->json(['success' => true, 'min_days' => $minDays, 'candidates' => ViewerDummyData::slaCandidates($minDays)]);
+        }
+
         $cutoff = now()->subDays($minDays);
 
         $rows = DB::table('interface_down_events as e')
@@ -230,6 +249,16 @@ class SlaController extends Controller
             return response()->json(['success' => false, 'error' => 'Missing device_id or if_index'], 400);
         }
 
+        $events = ViewerDummyData::isViewer($request)
+            ? ViewerDummyData::slaInterfaceEvents($deviceId, $ifIndex, $days)
+            : $this->eventRows($deviceId, $ifIndex, $days);
+
+        return response()->json(['success' => true, 'days' => $days, 'events' => $events]);
+    }
+
+    /** Down events of one interface touching the last $days days, newest first (MySQL). */
+    private function eventRows(int $deviceId, int $ifIndex, int $days): array
+    {
         $rows = DB::select("
             SELECT down_at, up_at,
                    COALESCE(duration_sec, TIMESTAMPDIFF(SECOND, down_at, NOW())) AS duration_sec
@@ -239,14 +268,12 @@ class SlaController extends Controller
             ORDER BY down_at DESC
         ", [$deviceId, $ifIndex]);
 
-        $events = array_map(fn ($r) => [
+        return array_map(fn ($r) => [
             'down_at' => $r->down_at,
             'up_at' => $r->up_at,
             'duration_sec' => (int) $r->duration_sec,
             'ongoing' => $r->up_at === null,
         ], $rows);
-
-        return response()->json(['success' => true, 'days' => $days, 'events' => $events]);
     }
 
     /** GET /api/sla/interface/export — CSV of every down event for one interface. */
@@ -325,32 +352,23 @@ class SlaController extends Controller
             return [false, 0, 0, $days, []];
         }
 
-        $rows = DB::select("
-            SELECT down_at, up_at,
-                   COALESCE(duration_sec, TIMESTAMPDIFF(SECOND, down_at, NOW())) AS duration_sec
-            FROM interface_down_events
-            WHERE device_id = ? AND if_index = ?
-              AND COALESCE(up_at, NOW()) >= NOW() - INTERVAL {$days} DAY
-            ORDER BY down_at DESC
-        ", [$deviceId, $ifIndex]);
+        if (ViewerDummyData::isViewer($request)) {
+            $events = ViewerDummyData::slaInterfaceEvents($deviceId, $ifIndex, $days);
+            $meta = (object) ViewerDummyData::interfaceMeta($deviceId, $ifIndex);
+        } else {
+            $events = $this->eventRows($deviceId, $ifIndex, $days);
 
-        $events = array_map(fn ($r) => [
-            'down_at' => $r->down_at,
-            'up_at' => $r->up_at,
-            'duration_sec' => (int) $r->duration_sec,
-            'ongoing' => $r->up_at === null,
-        ], $rows);
-
-        // Meta: prefer the latest event snapshot, else the live interface row.
-        $meta = DB::table('interface_down_events')
-            ->where('device_id', $deviceId)->where('if_index', $ifIndex)
-            ->orderByDesc('down_at')
-            ->first(['device_name', 'if_name', 'if_alias']);
-        if (!$meta) {
-            $meta = DB::table('interfaces')
-                ->leftJoin('snmp_devices', 'interfaces.device_id', '=', 'snmp_devices.id')
-                ->where('interfaces.device_id', $deviceId)->where('interfaces.if_index', $ifIndex)
-                ->first(['snmp_devices.device_name', 'interfaces.if_name', 'interfaces.if_alias']);
+            // Meta: prefer the latest event snapshot, else the live interface row.
+            $meta = DB::table('interface_down_events')
+                ->where('device_id', $deviceId)->where('if_index', $ifIndex)
+                ->orderByDesc('down_at')
+                ->first(['device_name', 'if_name', 'if_alias']);
+            if (!$meta) {
+                $meta = DB::table('interfaces')
+                    ->leftJoin('snmp_devices', 'interfaces.device_id', '=', 'snmp_devices.id')
+                    ->where('interfaces.device_id', $deviceId)->where('interfaces.if_index', $ifIndex)
+                    ->first(['snmp_devices.device_name', 'interfaces.if_name', 'interfaces.if_alias']);
+            }
         }
         $metaArr = [
             'device_name' => $meta->device_name ?? ('Device #' . $deviceId),

@@ -150,7 +150,8 @@ class InterfaceMonitoringTest extends TestCase
         $this->openEvent(1, now()->subDays(2)->toDateTimeString());  // baru 2 hari: bukan
         $this->openEvent(3, now()->subDays(30)->toDateTimeString()); // sudah tidak dipakai: bukan
 
-        $res = $this->as('viewer')->getJson('/api/sla/candidates')->assertOk();
+        // Viewer (akun demo) mendapat kandidat dummy — lihat ViewerDummyIsolationTest.
+        $res = $this->as('technician')->getJson('/api/sla/candidates')->assertOk();
         $this->assertSame([2], array_column($res->json('candidates'), 'if_index'));
         $this->assertGreaterThanOrEqual(9, $res->json('candidates.0.down_days'));
     }

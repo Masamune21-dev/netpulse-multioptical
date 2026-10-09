@@ -25,7 +25,7 @@ class InterfacesController extends Controller
             $perPage = (int) $request->query('per_page', 25);
             $perPage = in_array($perPage, [10, 25, 50, 100], true) ? $perPage : 25;
             $dummy = ViewerDummyData::apiInterfaces(max(1, (int) $request->query('page', 1)), $perPage, (int) $request->query('device_id', 0));
-            $dummy['meta']['thresholds'] = RxThresholds::global();
+            $dummy['meta']['thresholds'] = ViewerDummyData::globalRxThresholds();
 
             return response()->json(['success' => true] + $dummy);
         }

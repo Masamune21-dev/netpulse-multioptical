@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\ViewerDummyData;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -13,8 +14,13 @@ use Illuminate\Support\Facades\DB;
 class AlertMutesController extends Controller
 {
     /** GET: global mute state + list of currently muted devices. */
-    public function index()
+    public function index(Request $request)
     {
+        // Viewer (akun demo): status mute rekaan — catatan pemeliharaan produksi tidak dikirim.
+        if (ViewerDummyData::isViewer($request)) {
+            return response()->json(['success' => true] + ViewerDummyData::alertMutes());
+        }
+
         $now = Carbon::now();
 
         $rows = DB::table('alert_mutes')

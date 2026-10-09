@@ -85,6 +85,68 @@ final class ViewerDummyData
         ];
     }
 
+    /** Satu perangkat dummy menurut id (101–104), null bila bukan id dummy. */
+    public static function device(int $deviceId): ?array
+    {
+        foreach (self::devices() as $d) {
+            if ((int) $d['id'] === $deviceId) {
+                return $d;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Meta satu interface dummy (nama perangkat/port/alias) untuk modal grafik trafik,
+     * modal ambang RX, dan laporan SLA viewer. Id di luar perangkat dummy tetap dijawab
+     * dengan nama rekaan — tidak pernah dari tabel produksi.
+     */
+    public static function interfaceMeta(int $deviceId, int $ifIndex): array
+    {
+        $dev = self::device($deviceId);
+        $iface = null;
+        foreach (self::interfaces($deviceId) as $i) {
+            if ((int) $i['if_index'] === $ifIndex) {
+                $iface = $i;
+                break;
+            }
+        }
+        $isSfp = (int) ($iface['is_sfp'] ?? 1) === 1;
+
+        return [
+            'device_name' => $dev['device_name'] ?? ('Demo Device ' . $deviceId),
+            'device_ip' => $dev['ip_address'] ?? ('10.0.0.' . ($deviceId % 256)),
+            'if_name' => $iface['if_name'] ?? ('port' . $ifIndex),
+            'if_alias' => $iface['if_alias'] ?? null,
+            'if_description' => null,
+            'if_speed' => $isSfp ? 10_000_000_000 : 1_000_000_000,
+            'oper_status' => 1,
+            'interface_type' => $isSfp ? 'SFP+' : null,
+            'rx_power' => $iface['rx_power'] ?? null,
+        ];
+    }
+
+    /** Ambang RX global dummy (selaras settings()) — viewer tidak membaca ambang produksi. */
+    public static function rxThresholds(): array
+    {
+        $s = self::settings();
+
+        return [
+            'rx_warn_high' => (float) $s['alert_rx_warning_high'],
+            'rx_warn_low' => (float) $s['alert_rx_warning_low'],
+            'rx_down_threshold' => (float) $s['alert_rx_down_threshold'],
+        ];
+    }
+
+    /** Bentuk sama dengan RxThresholds::global() (dipakai respons API mobile). */
+    public static function globalRxThresholds(): array
+    {
+        $t = self::rxThresholds();
+
+        return ['rx_warn_low' => $t['rx_warn_low'], 'rx_down_threshold' => $t['rx_down_threshold']];
+    }
+
     public static function monitoringDevices(): array
     {
         return array_map(
@@ -603,23 +665,198 @@ final class ViewerDummyData
         $in = array_column($data, 'in_rate_bps');
         $out = array_column($data, 'out_rate_bps');
 
+        $meta = self::interfaceMeta($deviceId, $ifIndex);
+        unset($meta['rx_power']);
+
         return [
-            'meta' => [
-                'device_name' => 'RTR-CORE-DEMO',
-                'device_ip' => '10.10.0.1',
-                'if_name' => 'sfp-sfpplus1',
-                'if_alias' => 'Uplink-1',
-                'if_description' => null,
-                'if_speed' => 10_000_000_000,
-                'oper_status' => 1,
-                'interface_type' => 'SFP+',
-                'range' => $range,
-            ],
+            'meta' => $meta + ['range' => $range],
             'data' => $data,
             'summary' => [
                 'in_cur' => end($in), 'in_avg' => (int) (array_sum($in) / count($in)), 'in_max' => max($in),
                 'out_cur' => end($out), 'out_avg' => (int) (array_sum($out) / count($out)), 'out_max' => max($out),
             ],
         ];
+    }
+
+    /** Pengganti GET /api/alert_mutes untuk viewer: satu mute rekaan, tanpa catatan produksi. */
+    public static function alertMutes(): array
+    {
+        return [
+            'global' => ['muted' => false, 'muted_until' => null],
+            'devices' => [[
+                'device_id' => 104,
+                'device_name' => 'EDGE-POP-DEMO',
+                'note' => 'Pemeliharaan (demo)',
+                'muted_until' => date('Y-m-d H:i:s', time() + 2 * 3600),
+            ]],
+        ];
+    }
+
+    // ── Laporan SLA (viewer) ─────────────────────────────────────────────────
+    // Dulu /api/sla* menyajikan interface_down_events produksi apa adanya (ribuan kejadian,
+    // alias berisi nama mitra) ke akun demo. Kejadian di bawah dibuat relatif terhadap
+    // sekarang supaya selalu jatuh di jendela 1/7/30/90 hari, dan memakai perangkat/port
+    // yang sama dengan devices()/interfaces().
+
+    /**
+     * @return list<array{device_id:int,if_index:int,device_name:string,if_name:string,if_alias:?string,down_at:string,up_at:?string,duration_sec:?int}>
+     */
+    public static function slaDownEvents(): array
+    {
+        // [device_id, if_index, mulai (detik yang lalu), durasi (detik) | null = masih down]
+        $spec = [
+            [101, 1, 3 * 86400 + 4 * 3600, 240],
+            [101, 1, 20 * 86400 + 7 * 3600, 720],
+            [102, 2, 1 * 86400 + 2 * 3600, 120],
+            [102, 2, 6 * 86400 + 9 * 3600, 2100],
+            [102, 2, 11 * 86400 + 5 * 3600, 4800],
+            [102, 2, 40 * 86400, 900],
+            [102, 2, 75 * 86400, 3 * 3600],
+            [103, 1, 15 * 86400 + 3 * 3600, 2 * 3600],
+            [103, 2, 2 * 3600, null],
+            [104, 1, 9 * 86400 + 3 * 3600, null],
+            [104, 2, 2 * 86400 + 6 * 3600, 2700],
+            [104, 2, 28 * 86400, 360],
+        ];
+
+        $now = time();
+        $out = [];
+        foreach ($spec as [$deviceId, $ifIndex, $ago, $duration]) {
+            $meta = self::interfaceMeta($deviceId, $ifIndex);
+            $start = $now - $ago;
+            $out[] = [
+                'device_id' => $deviceId,
+                'if_index' => $ifIndex,
+                'device_name' => $meta['device_name'],
+                'if_name' => $meta['if_name'],
+                'if_alias' => $meta['if_alias'],
+                'down_at' => date('Y-m-d H:i:s', $start),
+                'up_at' => $duration !== null ? date('Y-m-d H:i:s', $start + $duration) : null,
+                'duration_sec' => $duration,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Baris ringkasan per interface, bentuk & aturan sama dengan query SlaController::summary():
+     * kejadian yang menyentuh jendela ikut, down_count hanya yang mulai di dalam jendela,
+     * downtime dipotong ke awal jendela, urut down_count lalu down_sec menurun.
+     *
+     * @return list<object>
+     */
+    public static function slaSummaryRows(int $days, int $deviceId = 0, string $q = ''): array
+    {
+        $now = time();
+        $windowStart = $now - $days * 86400;
+        $groups = [];
+
+        foreach (self::slaDownEvents() as $e) {
+            if ($deviceId > 0 && $e['device_id'] !== $deviceId) {
+                continue;
+            }
+            if ($q !== '') {
+                $hay = mb_strtolower($e['device_name'] . ' ' . $e['if_name'] . ' ' . ($e['if_alias'] ?? ''));
+                if (!str_contains($hay, mb_strtolower($q))) {
+                    continue;
+                }
+            }
+
+            $start = strtotime($e['down_at']);
+            $end = $e['up_at'] !== null ? strtotime($e['up_at']) : $now;
+            if ($end < $windowStart) {
+                continue;
+            }
+
+            $k = $e['device_id'] . ':' . $e['if_index'];
+            $groups[$k] ??= [
+                'device_id' => $e['device_id'],
+                'if_index' => $e['if_index'],
+                'device_name' => $e['device_name'],
+                'if_name' => $e['if_name'],
+                'if_alias' => $e['if_alias'],
+                'down_count' => 0,
+                'down_sec' => 0,
+                'still_down' => 0,
+                'last_down_at' => null,
+            ];
+            if ($start >= $windowStart) {
+                $groups[$k]['down_count']++;
+            }
+            $groups[$k]['down_sec'] += max(0, $end - max($start, $windowStart));
+            if ($e['up_at'] === null) {
+                $groups[$k]['still_down'] = 1;
+            }
+            if ($groups[$k]['last_down_at'] === null || $e['down_at'] > $groups[$k]['last_down_at']) {
+                $groups[$k]['last_down_at'] = $e['down_at'];
+            }
+        }
+
+        $rows = array_values(array_filter($groups, fn ($g) => $g['down_count'] > 0));
+        usort($rows, fn ($a, $b) => [$b['down_count'], $b['down_sec']] <=> [$a['down_count'], $a['down_sec']]);
+
+        return array_map(fn ($g) => (object) $g, $rows);
+    }
+
+    /**
+     * Kejadian down satu interface dalam jendela, bentuk sama dengan SlaController::events().
+     *
+     * @return list<array{down_at:string,up_at:?string,duration_sec:int,ongoing:bool}>
+     */
+    public static function slaInterfaceEvents(int $deviceId, int $ifIndex, int $days): array
+    {
+        $now = time();
+        $windowStart = $now - $days * 86400;
+        $out = [];
+
+        foreach (self::slaDownEvents() as $e) {
+            if ($e['device_id'] !== $deviceId || $e['if_index'] !== $ifIndex) {
+                continue;
+            }
+            $end = $e['up_at'] !== null ? strtotime($e['up_at']) : $now;
+            if ($end < $windowStart) {
+                continue;
+            }
+            $out[] = [
+                'down_at' => $e['down_at'],
+                'up_at' => $e['up_at'],
+                'duration_sec' => $e['duration_sec'] ?? max(0, $now - strtotime($e['down_at'])),
+                'ongoing' => $e['up_at'] === null,
+            ];
+        }
+
+        usort($out, fn ($a, $b) => strcmp($b['down_at'], $a['down_at']));
+
+        return $out;
+    }
+
+    /** Port dummy yang down tanpa henti lebih dari $minDays hari (kandidat "tidak dipakai"). */
+    public static function slaCandidates(int $minDays): array
+    {
+        $now = time();
+        $cutoff = $now - $minDays * 86400;
+        $out = [];
+
+        foreach (self::slaDownEvents() as $e) {
+            if ($e['up_at'] !== null || strtotime($e['down_at']) > $cutoff) {
+                continue;
+            }
+            $out[] = [
+                'device_id' => $e['device_id'],
+                'if_index' => $e['if_index'],
+                'device_name' => $e['device_name'],
+                'if_name' => $e['if_name'],
+                'if_alias' => $e['if_alias'],
+                'oper_status' => 2,
+                'rx_power' => -40.0,
+                'down_at' => $e['down_at'],
+                'down_days' => (int) floor(($now - strtotime($e['down_at'])) / 86400),
+            ];
+        }
+
+        usort($out, fn ($a, $b) => strcmp($a['down_at'], $b['down_at']));
+
+        return $out;
     }
 }

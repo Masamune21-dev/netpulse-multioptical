@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Support\UserState;
+use App\Support\ViewerDummyData;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -112,6 +113,12 @@ class InterfaceMonitoringController extends Controller
         $ifIndex = (int) $request->query('if_index', 0);
         if ($deviceId <= 0 || $ifIndex <= 0) {
             return response()->json(['success' => false, 'error' => 'Missing device_id or if_index'], 400);
+        }
+
+        // Viewer (akun demo): semua port dummy dipantau, jadi riwayatnya kosong. Dulu riwayat
+        // produksi (alasan + username admin di changed_by) ikut terkirim.
+        if (ViewerDummyData::isViewer($request)) {
+            return response()->json(['success' => true, 'history' => []]);
         }
 
         $rows = DB::table('interface_monitoring_changes')

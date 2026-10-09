@@ -31,6 +31,19 @@ class DeviceTokenController extends Controller
             return response()->json(['error' => 'Token already registered'], 409);
         }
 
+        // Viewer = akun demo: tidak menerima push alert produksi, jadi tokennya tidak disimpan.
+        // APK mendaftarkan token otomatis setelah login → tetap dijawab sukses. Baris lama untuk
+        // token HP ini (milik viewer sendiri, atau milik akun lain yang sudah logout di semua
+        // perangkat — HP bersama) dilepas supaya HP yang kini dipakai akun demo berhenti
+        // menerima alert akun sebelumnya.
+        if ((string) ($user->role ?? '') === 'viewer') {
+            if ($model->exists) {
+                $model->delete();
+            }
+
+            return response()->json(['success' => true]);
+        }
+
         $model->fill([
             'user_id' => $user->id,
             'platform' => $data['platform'] ?? $model->platform,
