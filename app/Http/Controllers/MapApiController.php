@@ -9,6 +9,9 @@ use Illuminate\Support\Facades\Schema;
 
 class MapApiController extends Controller
 {
+    /** Port data older than this (poller runs every minute) no longer reflects the link. */
+    private const LINK_STALE_AFTER_MINUTES = 10;
+
     public function nodes(Request $request)
     {
         if (ViewerDummyData::isViewer($request)) {
@@ -223,6 +226,9 @@ class MapApiController extends Controller
 
     private function getLinks()
     {
+        // An end is "stale" when its switch no longer answers SNMP or its port row has not
+        // been refreshed by the poller: the stored status/RX is then the last known value,
+        // not the current one, and must not paint the line green (21 Okt 2026).
         $rows = DB::select("
             SELECT ml.*,
                    na.node_name AS node_a_name,
@@ -234,18 +240,24 @@ class MapApiController extends Controller
                    ia.rx_power AS interface_a_rx,
                    ia.tx_power AS interface_a_tx,
                    ib.rx_power AS interface_b_rx,
-                   ib.tx_power AS interface_b_tx
+                   ib.tx_power AS interface_b_tx,
+                   (ia.id IS NOT NULL AND (COALESCE(sda.last_status, '') <> 'OK' OR ia.last_seen IS NULL OR ia.last_seen < NOW() - INTERVAL ? MINUTE)) AS interface_a_stale,
+                   (ib.id IS NOT NULL AND (COALESCE(sdb.last_status, '') <> 'OK' OR ib.last_seen IS NULL OR ib.last_seen < NOW() - INTERVAL ? MINUTE)) AS interface_b_stale
             FROM map_links ml
             LEFT JOIN map_nodes na ON ml.node_a_id = na.id
             LEFT JOIN map_nodes nb ON ml.node_b_id = nb.id
             LEFT JOIN interfaces ia ON ml.interface_a_id = ia.id
             LEFT JOIN interfaces ib ON ml.interface_b_id = ib.id
+            LEFT JOIN snmp_devices sda ON ia.device_id = sda.id
+            LEFT JOIN snmp_devices sdb ON ib.device_id = sdb.id
             ORDER BY ml.created_at DESC
-        ");
+        ", [self::LINK_STALE_AFTER_MINUTES, self::LINK_STALE_AFTER_MINUTES]);
 
         $links = [];
         foreach ($rows as $row) {
             $row = (array) $row;
+            $row['interface_a_stale'] = (bool) ($row['interface_a_stale'] ?? false);
+            $row['interface_b_stale'] = (bool) ($row['interface_b_stale'] ?? false);
             $row['interface_a_status'] = isset($row['interface_a_status']) ? (int) $row['interface_a_status'] : null;
             $row['interface_b_status'] = isset($row['interface_b_status']) ? (int) $row['interface_b_status'] : null;
             $row['interface_a_rx'] = $row['interface_a_rx'] !== null ? (float) $row['interface_a_rx'] : null;

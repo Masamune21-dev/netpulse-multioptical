@@ -347,18 +347,29 @@ function buildConnections() {
         txA: link.interface_a_tx,
         rxB: link.interface_b_rx,
         txB: link.interface_b_tx,
+        staleA: link.interface_a_stale === true,
+        staleB: link.interface_b_stale === true,
         path: parsePath(link.path_json)
     }));
 }
 
+// RX of one end, or null when unknown. A stale end (switch not answering SNMP, port not
+// refreshed) only holds its last known value, so it must not decide the line colour.
+// Number(null) is 0, so null/'' are checked first — otherwise a missing RX read as 0 dBm.
+function linkEndRx(rx, stale) {
+    if (stale || rx === null || rx === undefined || rx === '') return null;
+    const v = Number(rx);
+    return Number.isFinite(v) ? v : null;
+}
+
 function computeLinkAttenuation(connection) {
-    const rxA = Number(connection.rxA);
-    const rxB = Number(connection.rxB);
-    if (Number.isFinite(rxA) && Number.isFinite(rxB)) {
+    const rxA = linkEndRx(connection.rxA, connection.staleA);
+    const rxB = linkEndRx(connection.rxB, connection.staleB);
+    if (rxA !== null && rxB !== null) {
         return (rxA + rxB) / 2;
     }
-    if (Number.isFinite(rxA)) return rxA;
-    if (Number.isFinite(rxB)) return rxB;
+    if (rxA !== null) return rxA;
+    if (rxB !== null) return rxB;
     return null;
 }
 
@@ -503,12 +514,17 @@ function renderConnections() {
         if (!map.hasLayer(fromMarker) || !map.hasLayer(toMarker)) return;
         const weight = 3;
         const actualAtt = computeLinkAttenuation(connection);
-        const rxA = Number(connection.rxA);
-        const rxB = Number(connection.rxB);
+        const rxA = linkEndRx(connection.rxA, connection.staleA);
+        const rxB = linkEndRx(connection.rxB, connection.staleB);
+        const downA = !connection.staleA && (Number(connection.statusA) === 2 || (rxA !== null && rxA <= -40));
+        const downB = !connection.staleB && (Number(connection.statusB) === 2 || (rxB !== null && rxB <= -40));
         let color = 'rgba(16, 185, 129, 0.85)';
 
-        // If any end is down (-40), force red
-        if ((Number.isFinite(rxA) && rxA <= -40) || (Number.isFinite(rxB) && rxB <= -40)) {
+        if (connection.staleA && connection.staleB) {
+            // Neither switch is reporting: the link state is unknown, not "up".
+            color = 'rgba(148, 163, 184, 0.85)';
+        } else if (downA || downB) {
+            // A live end reports the port down (or RX -40): force red.
             color = 'rgba(239, 68, 68, 0.85)';
         } else if (Number.isFinite(actualAtt) && actualAtt <= -18 && actualAtt >= -25) {
             color = 'rgba(245, 158, 11, 0.9)'; // yellow
