@@ -4,6 +4,45 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-10-21 — Fixed: Alert LINK DOWN Berulang Tiap Menit & Garis Map Tidak Sesuai
+
+- **Fixed (spam alert)**: satu switch inti dengan tiga port turun bersamaan mengirim LINK DOWN yang sama ke
+  Telegram/FCM **tiap menit** selama ±40 menit. Sebab: `emitAlert()` dipanggil di tengah loop port, sebelum
+  `saveAlertState()`. Tiap alert ±10 dtk (push FCM sinkron ke 16 token, 7 di antaranya sudah `UNREGISTERED`,
+  dan OAuth token Google diminta ulang **per token**; saat kejadian DNS ke `oauth2.googleapis.com` juga
+  timeout 10 dtk) → tiga alert melewati `poll:interfaces --timeout=30` → proses perangkat dibunuh sebelum
+  state tersimpan → poll berikutnya melihat transisi up→down yang sama lagi. Down/up sengaja tanpa cooldown,
+  jadi tidak ada rem. Kini `discover()` menampung alert di `$pendingAlerts` dan `flushAlerts()` baru
+  mengirimnya **setelah** state alert, semua baris `interfaces`, dan `reconcileVanishedPorts()` selesai
+  (jalur "ifName tidak menjawab" juga). Jalur "ifIndex tidak menjawab" sudah menyimpan state lebih dulu.
+- **Fixed (data port basi)**: efek samping yang sama — port setelah alert ketiga (ifIndex lebih besar) tidak
+  pernah ditulis ulang, jadi daftar interface, dashboard, dan map menampilkan status/RX lama (port yang
+  sudah down masih tercatat UP −18 dBm). Tertutup oleh perbaikan di atas.
+- **Changed (`FcmService`)**: access token Google dipakai ulang sampai 5 menit sebelum kedaluwarsa (memo per
+  proses + `Cache` lintas proses poller, gagal-cache diabaikan); HTTP ke Google `connectTimeout(5)` +
+  `timeout(10)` (dulu bawaan 30 dtk); error kirim membawa kode HTTP + `FcmService::isUnregistered()`.
+- **Changed (`sendMobilePush`)**: token yang dijawab FCM `404 UNREGISTERED` dihapus dari `device_tokens`
+  (aplikasi dicopot / token berganti — tidak akan pernah diterima lagi); `ConnectionException` (Google tak
+  terjangkau) menghentikan push untuk sisa token **dan** sisa alert di proses poll itu
+  (`$fcmUnreachable`), supaya satu gangguan DNS tidak menahan poller 10 dtk × jumlah token. Error FCM lain
+  (mis. 500) tidak menghapus token.
+- **Fixed (map, garis koneksi)**: `map.js` mewarnai garis hanya dari RX tersimpan; untuk switch yang tidak
+  menjawab SNMP nilai itu nilai terakhir, jadi garis di antara dua switch yang sama-sama mati tetap hijau.
+  `MapApiController::getLinks()` kini mengirim `interface_a_stale`/`interface_b_stale` (perangkat
+  `last_status <> 'OK'` atau `last_seen` > 10 menit, dihitung dengan `NOW()` MariaDB sesi +07:00).
+  `map.js`: ujung basi diabaikan; kedua ujung basi → garis abu-abu (tak terpantau); ujung segar dengan
+  `oper_status = 2` atau RX ≤ −40 → merah. Sekalian: RX `null` dulu terbaca 0 dBm (`Number(null) === 0`)
+  dan menggeser rata-rata ke "bagus" — kini dianggap tidak ada (`linkEndRx()`).
+- **Notes**: test baru `AlertPushDeliveryTest` (3; HTTP Google dipalsukan, kunci RSA dibuat saat test):
+  token OAuth diambil sekali untuk dua alert, token `UNREGISTERED` dihapus, error 500 tidak menghapus
+  token, Google tak terjangkau → satu percobaan saja. Jalur `discover()` tetap tak teruji otomatis (fungsi
+  SNMP global); diverifikasi di produksi — state perangkat terdampak kembali tersimpan tiap menit, port
+  ifIndex tinggi segar lagi, alert berhenti setelah poll pertama dengan kode baru. Endpoint map dicek baca-saja
+  di data produksi: 4 dari 29 garis bertanda basi (tepat garis yang menyentuh 2 switch yang tak menjawab).
+  APK (`map_screen.dart`) masih mewarnai garis dari `oper_status` tanpa melihat penanda basi — field baru
+  belum dikirim API v1; menyusul bila diperlukan. Suite penuh: 70 lulus.
+
+
 ## 2026-10-09 — Fixed: Kebocoran Data Produksi ke Role `viewer` (Akun Demo)
 
 - **Fixed (laporan SLA)**: `/api/sla`, `/api/sla/events`, `/api/sla/candidates`, ekspor CSV/PDF ringkasan

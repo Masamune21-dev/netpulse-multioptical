@@ -2,10 +2,25 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
 class FcmService
 {
+    /** Short HTTP limits: pushes run inside the poller, which has a per-device timeout. */
+    private const CONNECT_TIMEOUT = 5;
+    private const TIMEOUT = 10;
+
+    /** Access token memoized for this process (the cache store shares it across processes). */
+    private ?string $accessToken = null;
+    private int $accessTokenExpiresAt = 0;
+
+    /** FCM rejected the token for good (app uninstalled / token rotated); safe to delete it. */
+    public static function isUnregistered(\Throwable $e): bool
+    {
+        return $e->getCode() === 404 && str_contains($e->getMessage(), 'UNREGISTERED');
+    }
+
     /**
      * @return array{client_email:string, private_key:string, project_id:string}
      */
@@ -45,11 +60,48 @@ class FcmService
         return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
     }
 
+    /**
+     * Google OAuth access token, reused until shortly before it expires. Fetching one
+     * per device token used to double the HTTP calls of every alert.
+     */
     private function googleAccessToken(): string
     {
-        $creds = $this->credentials();
         $now = time();
+        if ($this->accessToken !== null && $now < $this->accessTokenExpiresAt) {
+            return $this->accessToken;
+        }
 
+        $creds = $this->credentials();
+        $cacheKey = 'fcm:access_token:' . sha1($creds['client_email']);
+        try {
+            $cached = Cache::get($cacheKey);
+        } catch (\Throwable $e) {
+            $cached = null;
+        }
+        if (is_array($cached) && ($cached['token'] ?? '') !== '' && $now < (int) ($cached['expires_at'] ?? 0)) {
+            $this->accessToken = (string) $cached['token'];
+            $this->accessTokenExpiresAt = (int) $cached['expires_at'];
+            return $this->accessToken;
+        }
+
+        $token = $this->fetchGoogleAccessToken($creds, $now, $expiresIn);
+        // Refresh 5 minutes early so a token never expires mid-send.
+        $this->accessToken = $token;
+        $this->accessTokenExpiresAt = $now + max(60, $expiresIn - 300);
+        try {
+            Cache::put($cacheKey, ['token' => $token, 'expires_at' => $this->accessTokenExpiresAt], $this->accessTokenExpiresAt - $now);
+        } catch (\Throwable $e) {
+            // Cache is an optimisation only.
+        }
+
+        return $token;
+    }
+
+    /**
+     * @param array{client_email:string, private_key:string, project_id:string} $creds
+     */
+    private function fetchGoogleAccessToken(array $creds, int $now, ?int &$expiresIn): string
+    {
         $header = $this->base64UrlEncode(json_encode([
             'alg' => 'RS256',
             'typ' => 'JWT',
@@ -79,7 +131,7 @@ class FcmService
 
         $jwt = $signingInput . '.' . $this->base64UrlEncode($signature);
 
-        $res = Http::asForm()->post('https://oauth2.googleapis.com/token', [
+        $res = Http::asForm()->connectTimeout(self::CONNECT_TIMEOUT)->timeout(self::TIMEOUT)->post('https://oauth2.googleapis.com/token', [
             'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
             'assertion' => $jwt,
         ]);
@@ -94,6 +146,7 @@ class FcmService
         if ($token === '') {
             throw new \RuntimeException('Missing access_token from Google');
         }
+        $expiresIn = (int) ($res->json('expires_in') ?? 3600);
 
         return $token;
     }
@@ -135,12 +188,12 @@ class FcmService
 
         $url = "https://fcm.googleapis.com/v1/projects/{$creds['project_id']}/messages:send";
 
-        $res = Http::withToken($accessToken)->post($url, $payload);
+        $res = Http::withToken($accessToken)->connectTimeout(self::CONNECT_TIMEOUT)->timeout(self::TIMEOUT)->post($url, $payload);
 
         $json = $res->json();
         if (!$res->ok()) {
             $err = is_array($json) ? json_encode($json) : (string) $res->body();
-            throw new \RuntimeException("FCM send failed: HTTP {$res->status()} {$err}");
+            throw new \RuntimeException("FCM send failed: HTTP {$res->status()} {$err}", $res->status());
         }
 
         return is_array($json) ? $json : ['success' => true];

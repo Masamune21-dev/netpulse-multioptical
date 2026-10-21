@@ -9,6 +9,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use App\Services\FcmService;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Log;
 
 class InterfaceDiscovery
@@ -23,6 +24,9 @@ class InterfaceDiscovery
     public const PUSH_ROLES = ['admin', 'technician'];
 
     private static bool $alertLogTableChecked = false;
+
+    /** Set once FCM/Google could not be reached; further pushes in this process are skipped. */
+    private bool $fcmUnreachable = false;
 
     public function discover(int $deviceId, bool $isCli = false): array
     {
@@ -56,6 +60,11 @@ class InterfaceDiscovery
         $alertStateFile = storage_path('app/alert_state/' . $deviceId . '.json');
         $alertState = $isCli ? $this->loadAlertState($alertStateFile, $deviceId) : [];
         $alertStateDirty = false;
+        // Alerts are queued and only sent once the alert state (and every port row) is
+        // saved. Sending is slow network I/O (FCM per token + Telegram); if it ran inline
+        // the poller's per-device timeout could kill the process before the state was
+        // written, so the same down transition fired again every minute (21 Okt 2026).
+        $pendingAlerts = [];
 
         // 2s timeout + 2 retries (tolerance up to ~6s for lossy/wireless links).
         // If the initial probe fails completely, skip remaining walks immediately
@@ -141,7 +150,7 @@ class InterfaceDiscovery
 
             if ($prevKnown && $prevUp && !$nowUp && ($alertSettings['device_down'] ?? true)) {
                 $msg = "🔴 DEVICE DOWN\n📟 Device: {$deviceLabel}\n🕒 Time: {$timeLabel}";
-                $this->emitAlert(
+                $pendingAlerts[] = [
                     $alertSettings,
                     [
                         'device_id' => $deviceId,
@@ -152,11 +161,11 @@ class InterfaceDiscovery
                     'device_down',
                     'critical',
                     "Device down: {$deviceLabel}",
-                    $msg
-                );
+                    $msg,
+                ];
             } elseif ($prevKnown && !$prevUp && $nowUp && ($alertSettings['device_up'] ?? true)) {
                 $msg = "🟢 DEVICE UP\n📟 Device: {$deviceLabel}\n🕒 Time: {$timeLabel}";
-                $this->emitAlert(
+                $pendingAlerts[] = [
                     $alertSettings,
                     [
                         'device_id' => $deviceId,
@@ -167,8 +176,8 @@ class InterfaceDiscovery
                     'device_up',
                     'info',
                     "Device up: {$deviceLabel}",
-                    $msg
-                );
+                    $msg,
+                ];
             }
         }
 
@@ -177,6 +186,7 @@ class InterfaceDiscovery
             if ($isCli && $alertStateDirty) {
                 $this->saveAlertState($alertStateFile, $alertState);
             }
+            $this->flushAlerts($pendingAlerts);
             if ($isCli) {
                 return [
                     'success' => false,
@@ -460,29 +470,29 @@ class InterfaceDiscovery
                     && ($alertSettings['interface_down'] ?? true)
                 ) {
                     $tg = "🔴 LINK DOWN\n📟 Device: {$deviceLabel}\n🔌 Interface: {$ifaceLabel}\n🕒 Time: {$timeLabel}";
-                    $this->emitAlert(
+                    $pendingAlerts[] = [
                         $alertSettings,
                         $deviceMeta,
                         $ifaceMeta,
                         'interface_down',
                         'critical',
                         "Interface down: {$deviceLabel} / {$ifaceLabel}",
-                        $tg
-                    );
+                        $tg,
+                    ];
                 } elseif (
                     $linkCameUp
                     && ($alertSettings['interface_up'] ?? true)
                 ) {
                     $tg = "🟢 LINK UP\n📟 Device: {$deviceLabel}\n🔌 Interface: {$ifaceLabel}\n📡 RX: " . ($rx !== null ? "{$rx} dBm" : 'N/A') . "\n🕒 Time: {$timeLabel}";
-                    $this->emitAlert(
+                    $pendingAlerts[] = [
                         $alertSettings,
                         $deviceMeta,
                         $ifaceMeta,
                         'interface_up',
                         'info',
                         "Interface up: {$deviceLabel} / {$ifaceLabel} (RX " . ($rx !== null ? "{$rx} dBm" : 'N/A') . ")",
-                        $tg
-                    );
+                        $tg,
+                    ];
                 }
 
                 if (
@@ -490,15 +500,15 @@ class InterfaceDiscovery
                     && ($alertSettings['interface_warning'] ?? true)
                 ) {
                     $tg = "🟡 RX WARNING\n📟 Device: {$deviceLabel}\n🔌 Interface: {$ifaceLabel}\n📡 RX: " . ($rx !== null ? "{$rx} dBm" : 'N/A') . "\n🕒 Time: {$timeLabel}";
-                    $this->emitAlert(
+                    $pendingAlerts[] = [
                         $alertSettings,
                         $deviceMeta,
                         $ifaceMeta,
                         'interface_warning',
                         $nowWarnLevel === 'critical' ? 'critical' : 'warning',
                         "RX warning: {$deviceLabel} / {$ifaceLabel} (RX " . ($rx !== null ? "{$rx} dBm" : 'N/A') . ")",
-                        $tg
-                    );
+                        $tg,
+                    ];
                 }
             }
 
@@ -590,6 +600,8 @@ class InterfaceDiscovery
         if ($isCli && $seenIdx !== []) {
             $this->reconcileVanishedPorts($deviceId, $seenIdx, $prevRows, $unmonitored);
         }
+
+        $this->flushAlerts($pendingAlerts);
 
         return [
             'success' => true,
@@ -966,6 +978,18 @@ class InterfaceDiscovery
     }
 
     /**
+     * Send the alerts queued by discover(), after the alert state has been saved.
+     *
+     * @param array<int,array> $pending emitAlert() argument lists
+     */
+    private function flushAlerts(array $pending): void
+    {
+        foreach ($pending as $args) {
+            $this->emitAlert(...$args);
+        }
+    }
+
+    /**
      * Whether alerting is currently muted for this device — either a global
      * mute (device_id = 0) or a per-device mute, optionally auto-expiring.
      */
@@ -1136,6 +1160,10 @@ class InterfaceDiscovery
         $title = strtoupper($severity) . ' • ' . str_replace('_', ' ', $eventType);
         $body = $logMessage;
 
+        if ($this->fcmUnreachable) {
+            return;
+        }
+
         /** @var FcmService $fcm */
         $fcm = app(FcmService::class);
 
@@ -1174,7 +1202,26 @@ class InterfaceDiscovery
                         'ts' => date('c'),
                     ],
                 );
+            } catch (ConnectionException $e) {
+                // Google unreachable (DNS/connect timeout): every remaining token would
+                // stall just as long, so stop pushing for the rest of this poll.
+                $this->fcmUnreachable = true;
+                Log::warning('FCM push failed', [
+                    'user_id' => $userId,
+                    'token_prefix' => substr($token, 0, 16),
+                    'error' => $e->getMessage(),
+                ]);
+                return;
             } catch (\Throwable $e) {
+                if (FcmService::isUnregistered($e)) {
+                    // App uninstalled / token rotated: FCM will never accept it again.
+                    DB::table('device_tokens')->where('token', $token)->delete();
+                    Log::info('FCM token unregistered, removed', [
+                        'user_id' => $userId,
+                        'token_prefix' => substr($token, 0, 16),
+                    ]);
+                    continue;
+                }
                 Log::warning('FCM push failed', [
                     'user_id' => $userId,
                     'token_prefix' => substr($token, 0, 16),
