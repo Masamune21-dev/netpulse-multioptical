@@ -4,6 +4,20 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-10-23 — Changed: Logo & Favicon = Logo Kusumanet One
+
+- **Changed**: permintaan pemilik — semua logo ekosistem diganti logo Kusumanet One, termasuk favicon. Kotak merek
+  di header HP (`.mobile-logo`), judul sidebar (`.sidebar-logo`, dulu `.sidebar h2 i`), dan halaman login (`.logo-icon`)
+  kini berisi `/images/kusumanet-one.webp` (ubin putih + «K» kabel serat) menggantikan ikon `fa-wave-square`; latar
+  kotaknya putih di kedua tema karena logo bertepi halo putih (garis hitam 3 px gaya neo-brutalis tetap). CSS di
+  `public/assets/css/style.css` & `pages/login.css`.
+- **Changed**: `public/favicon.ico` dulu berkas kosong 0 byte → ICO 16/32/48; `layouts/app.blade.php` & `auth/login.blade.php`
+  + `rel=icon` dan `apple-touch-icon`.
+- **Created**: `public/images/kusumanet-one.webp`, `public/apple-touch-icon.png` — turunan logo Kusumanet One (generator di
+  repo SSO `tools/logo-web/`).
+- **Notes**: Blade & CSS langsung aktif (CSS ber-`?v=filemtime`), tanpa build. `/login`, `/favicon.ico`, logo 200.
+  Ikon peluncur APK Netpulse Mobile belum diganti (butuh build + rilis APK).
+
 ## 2026-10-21 — Fixed: Alert LINK DOWN Berulang Tiap Menit & Garis Map Tidak Sesuai
 
 - **Fixed (spam alert)**: satu switch inti dengan tiga port turun bersamaan mengirim LINK DOWN yang sama ke

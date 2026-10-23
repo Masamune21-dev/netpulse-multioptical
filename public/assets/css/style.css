@@ -226,10 +226,10 @@ body[data-role="viewer"] .action-delete {
     padding: 12px;
 }
 
-.sidebar h2 i,
+.sidebar-logo,
 .mobile-logo {
     align-items: center;
-    background: var(--primary);
+    background: #ffffff;
     border: 3px solid #050505;
     border-radius: var(--radius-md);
     color: #050505;
@@ -237,7 +237,17 @@ body[data-role="viewer"] .action-delete {
     flex: 0 0 auto;
     height: 38px;
     justify-content: center;
+    overflow: hidden;
     width: 38px;
+}
+
+/* Logo Kusumanet One (23 Okt 2026) menggantikan ikon gelombang: ubin putih berisi logo,
+   jadi kotaknya putih di kedua tema (logo bertepi halo putih, tak boleh di atas warna). */
+.sidebar-logo img,
+.mobile-logo img {
+    display: block;
+    height: 100%;
+    width: 100%;
 }
 
 .sidebar ul {

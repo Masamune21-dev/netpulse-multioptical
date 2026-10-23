@@ -69,6 +69,18 @@ body.login-page {
     width: 46px;
 }
 
+/* Logo Kusumanet One (23 Okt 2026): kotak putih, bukan warna primer (logo bertepi halo putih). */
+.logo-icon {
+    background: #ffffff;
+    overflow: hidden;
+}
+
+.logo-icon img {
+    display: block;
+    height: 100%;
+    width: 100%;
+}
+
 .logo-text {
     color: #ffffff;
     font-size: 1.2rem;

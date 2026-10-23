@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login — NetPulse MultiOptical</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <script>
         (function () {
             try {
@@ -30,7 +32,7 @@
     <div class="login-left">
         <div class="brand-container">
             <div class="logo">
-                <div class="logo-icon"><i class="fas fa-wave-square"></i></div>
+                <div class="logo-icon"><img src="/images/kusumanet-one.webp" alt="" width="256" height="256"></div>
                 <div>
                     <div class="logo-text">NetPulse</div>
                     <div class="logo-sub">MultiOptical</div>

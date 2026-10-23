@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>{{ $pageTitle ?? 'NetPulse' }}</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
     <script>
@@ -92,7 +94,7 @@
         <header class="mobile-header">
             <div class="mobile-brand">
                 <div class="mobile-logo">
-                    <i class="fas fa-wave-square"></i>
+                    <img src="/images/kusumanet-one.webp" alt="" width="256" height="256">
                 </div>
                 <div class="mobile-titles">
                     <div class="mobile-title">NetPulse MultiOptical</div>
@@ -111,7 +113,7 @@
         <aside class="sidebar">
             <div class="sidebar-nav">
                 <h2>
-                    <i class="fas fa-wave-square"></i>
+                    <span class="sidebar-logo"><img src="/images/kusumanet-one.webp" alt="" width="256" height="256"></span>
                     NetPulse MultiOptical
                 </h2>
                 <ul>
