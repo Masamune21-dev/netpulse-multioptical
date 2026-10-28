@@ -419,15 +419,9 @@ class InterfaceDiscovery
                     [$warnLow, $warnHigh] = [$warnHigh, $warnLow];
                 }
 
-                $isDownByRx = ($rx === null || (is_numeric($rx) && (float) $rx <= $downThreshold));
-                $linkUp = ($oper == 1) && !$isDownByRx;
-                $nowWarnLevel = 'none';
-                if ($linkUp && is_numeric($rx)) {
-                    $rxF = (float) $rx;
-                    if ($rxF <= $warnHigh && $rxF > $downThreshold) {
-                        $nowWarnLevel = ($rxF < $warnLow) ? 'critical' : 'warning';
-                    }
-                }
+                [$linkUp, $nowWarnLevel] = self::linkState(
+                    $oper, $rx, $downThreshold, $warnHigh, $warnLow, $prevHadOptic, $prevLinkUp, $prevWarnLevel
+                );
                 $warnNow = $nowWarnLevel !== 'none';
 
                 $alertState[$stateKey] = [
@@ -611,6 +605,40 @@ class InterfaceDiscovery
             'optical_found' => count($opticalMap),
             'message' => "Discover OK: {$inserted} interfaces ({$sfpCount} SFP/QSFP, {$downSfpCount} down)",
         ];
+    }
+
+    /**
+     * Link state and RX warning level of one monitored SFP port, as used for alerts and SLA.
+     *
+     * Port UP (ifOperStatus 1) dengan RX null padahal port itu pernah punya bacaan optik berarti
+     * walk DDM gagal di siklus ini (switch lambat menjawab), bukan link putus — cahaya yang hilang
+     * menurunkan ifOperStatus. Keadaan sebelumnya dipertahankan. Dulu kasus ini dihitung down dan
+     * memicu DOWN+UP palsu serentak untuk semua port satu switch (dua switch Huawei, 26 & 28 Okt
+     * 2026); di riwayat, port "down" karena RX null selalu tetap mengalirkan trafik.
+     *
+     * @return array{0: bool, 1: string} [link up, warn level none|warning|critical]
+     */
+    private static function linkState(
+        int $oper,
+        ?float $rx,
+        float $downThreshold,
+        float $warnHigh,
+        float $warnLow,
+        bool $prevHadOptic,
+        bool $prevLinkUp,
+        string $prevWarnLevel
+    ): array {
+        if ($oper === 1 && $rx === null && $prevHadOptic) {
+            return [$prevLinkUp, $prevWarnLevel];
+        }
+
+        $linkUp = $oper === 1 && $rx !== null && $rx > $downThreshold;
+        $warnLevel = 'none';
+        if ($linkUp && $rx <= $warnHigh) {
+            $warnLevel = $rx < $warnLow ? 'critical' : 'warning';
+        }
+
+        return [$linkUp, $warnLevel];
     }
 
     /**

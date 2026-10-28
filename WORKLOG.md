@@ -4,6 +4,32 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-10-28 — Fixed: Alert DOWN+UP Palsu Serentak di Switch Huawei (RX Tak Terbaca)
+
+- **Fixed**: dua switch inti Huawei (26 Okt: 34 port, 28 Okt: 14 port) mengirim LINK DOWN untuk semua port SFP
+  sekaligus lalu LINK UP 60 dtk kemudian, padahal fisik normal. Semua alert DOWN-nya ber-`rx_power` NULL tetapi
+  `tx_power` terisi: `ifOperStatus` = 1, hanya walk RX (`hwEntityOpticalRxPower`) yang gagal sesiklus sementara
+  walk TX berhasil, dan `discover()` menghitung `rx === null` sebagai down. Keputusan up/down kini di
+  `InterfaceDiscovery::linkState()`: port UP dengan RX null padahal pernah punya bacaan optik (`had_optic`) =
+  **RX tak terbaca** → keadaan link & level peringatan sebelumnya dipertahankan (tanpa alert, tanpa kejadian
+  SLA). Berlaku semua vendor, termasuk RX+TX sama-sama null (walk/peta entitas gagal). Aturan lain tidak
+  berubah: oper≠1 → down, RX ≤ ambang down → down; port yang belum pernah punya bacaan optik (modul tanpa DDM)
+  tetap tidak pernah dianggap up.
+- **Notes**: dasar keputusan dari data produksi — seluruh riwayat `alert_logs` down ber-RX null (sejak Feb) tak
+  satu pun outage sungguhan; dua yang terlama (12 hari & 2,4 hari, Sep) tetap mengalirkan trafik ±230–400 Mbps
+  tiap hari selama "down". Test baru `tests/Unit/LinkStateTest` (5); suite 75 hijau. Aktif tanpa restart
+  (poller = proses artisan baru tiap menit); siklus pertama dengan kode baru normal, switch Huawei terpoll & RX
+  terbaca.
+- **Notes (data SLA, belum diterapkan)**: kejadian palsu lama di `interface_down_events` dipilah dari 209
+  kandidat (178 ber-alert DOWN RX null + 31 port sesiklus tanpa alert): 195 untuk dihapus (terbukti bertrafik
+  per menit/jam, atau tanpa sinyal putus nyata), 10 dipotong ke bagian putus sungguhan (alert DOWN RX −40 di
+  dalam rentang → `down_at` digeser ke sana; mis. 12 hari → 59 dtk), 4 dibiarkan karena tak bisa dibuktikan
+  (salah satunya port 82 hari dengan trafik nol). Skrip SQL eksplisit + cadangan baris disiapkan di luar repo;
+  penerapannya menunggu pemilik (agent tidak diizinkan menulis ke DB produksi).
+- **Notes (temuan, belum diperbaiki)**: alert terkirim sinkron ±3,5 dtk/buah dan proses poll per perangkat
+  dibunuh di 30 dtk, jadi satu siklus hanya sempat mengirim ±8–9 alert (14 kejadian → 9 alert, 34 → 8). Pada
+  gangguan massal sungguhan, sisa alert hilang tanpa diulang.
+
 ## 2026-10-23 — Changed: Logo & Favicon = Logo Kusumanet One
 
 - **Changed**: permintaan pemilik — semua logo ekosistem diganti logo Kusumanet One, termasuk favicon. Kotak merek
