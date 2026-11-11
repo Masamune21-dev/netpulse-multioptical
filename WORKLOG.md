@@ -4,6 +4,18 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-11-11 — Created: `AGENTS.md` — konteks otomatis AI agent (OpenCode)
+
+Latar: OpenCode V2 hanya membaca `AGENTS.md` dan **tidak** membaca `CLAUDE.md`, sehingga sesi AI
+yang dibuka di folder projek tidak menerima aturan projek secara otomatis. `AGENTS.md` kini menjadi
+pintu masuk ringkas; `CLAUDE.md` tetap sumber detail dan dirujuk dari sana.
+
+- **Created — `AGENTS.md`:** domain, MariaDB `netpulse`, tanpa Redis, cron, perintah polling & build APK, peringatan repo PUBLIK, CSP di nginx, dan tabel inti lama yang tidak dibuat migrasi.
+- **Notes:** penyusunan peta ekosistem `/var/www/AGENTS.md` (13 projek + aturan lintas app) dan
+  router global `~/.config/opencode/AGENTS.md` dikerjakan bersamaan di luar repo ini.
+- **Notes:** tidak ada perubahan kode/aplikasi. Bila domain, port, database, perintah, atau aturan
+  berubah, perbarui `AGENTS.md` bersama `CLAUDE.md`.
+
 ## 2026-10-28 — Fixed: Alert DOWN+UP Palsu Serentak di Switch Huawei (RX Tak Terbaca)
 
 - **Fixed**: dua switch inti Huawei (26 Okt: 34 port, 28 Okt: 14 port) mengirim LINK DOWN untuk semua port SFP
