@@ -72,9 +72,15 @@ class InterfaceDiscovery
         $snmpTimeout = 2000000; // 2s
         $snmpRetries = 2;
 
-        $ifIndex = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.2.2.1.1', $snmpTimeout, $snmpRetries);
+        // Walk dibaca BERDASARKAN ifIndex (sufiks OID), bukan berdasarkan posisi array.
+        // snmp2_walk() hanya mengembalikan daftar nilai; bila satu walk terpotong
+        // (switch lambat menjawab SNMP), posisi seluruh port bergeser sehingga status
+        // port A dipakai untuk port B. Lihat catatan kejadian 11 Nov 2026 di
+        // walkByIndex(). null = walk gagal, dan pemanggil WAJIB membacanya sebagai
+        // "tidak tahu" — bukan "down".
+        $indexByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.2.2.1.1', $snmpTimeout, $snmpRetries);
 
-        if (!$ifIndex) {
+        if ($indexByIdx === null) {
             $this->markDeviceStatus($deviceId, false, 'SNMP tidak menjawab (IF-MIB ifIndex) saat polling');
             if ($isCli) {
                 $deviceLabel = trim(($device->device_name ?? '') . ' (' . $ip . ')');
@@ -119,18 +125,24 @@ class InterfaceDiscovery
             ];
         }
 
-        $ifName = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.31.1.1.1.1', $snmpTimeout, $snmpRetries);
-        $ifDescr = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.2.2.1.2', $snmpTimeout, $snmpRetries);
-        $ifAlias = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.31.1.1.1.18', $snmpTimeout, $snmpRetries);
-        $ifOper = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.2.2.1.8', $snmpTimeout, $snmpRetries);
+        $nameByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.31.1.1.1.1', $snmpTimeout, $snmpRetries);
+        $descrByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.2.2.1.2', $snmpTimeout, $snmpRetries);
+        $aliasByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.31.1.1.1.18', $snmpTimeout, $snmpRetries);
+        $operByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.2.2.1.8', $snmpTimeout, $snmpRetries);
 
         // Speed (Mbps) and 64-bit traffic counters. Fallback to 32-bit if HC unavailable.
-        $ifHighSpeed = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.31.1.1.1.15', $snmpTimeout, $snmpRetries);
-        $ifSpeed = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.2.2.1.5', $snmpTimeout, $snmpRetries);
-        $ifHCIn = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.31.1.1.1.6', $snmpTimeout, $snmpRetries);
-        $ifHCOut = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.31.1.1.1.10', $snmpTimeout, $snmpRetries);
-        $ifIn = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.2.2.1.10', $snmpTimeout, $snmpRetries);
-        $ifOut = @\snmp2_walk($ip, $community, '1.3.6.1.2.1.2.2.1.16', $snmpTimeout, $snmpRetries);
+        $highSpeedByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.31.1.1.1.15', $snmpTimeout, $snmpRetries);
+        $speedByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.2.2.1.5', $snmpTimeout, $snmpRetries);
+        $hcInByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.31.1.1.1.6', $snmpTimeout, $snmpRetries);
+        $hcOutByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.31.1.1.1.10', $snmpTimeout, $snmpRetries);
+        $inByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.2.2.1.10', $snmpTimeout, $snmpRetries);
+        $outByIdx = $this->walkByIndex($ip, $community, '1.3.6.1.2.1.2.2.1.16', $snmpTimeout, $snmpRetries);
+
+        // ifOperStatus menentukan up/down. Kalau walk ini gagal, siklus dibuang:
+        // menilai status port tanpa data itu hanya menghasilkan alert palsu.
+        if ($operByIdx === null) {
+            return $this->skipCycleWithoutOper($device, $deviceId, $isCli, $alertStateFile, $alertState, $alertSettings);
+        }
 
         // Device up/down alert (CLI only, transition based)
         if ($isCli) {
@@ -140,11 +152,13 @@ class InterfaceDiscovery
             $prevDev = $alertState[$devKey] ?? null;
             $prevKnown = is_array($prevDev);
             $prevUp = $prevKnown ? (bool) ($prevDev['device_up'] ?? false) : true;
-            $nowUp = (bool) ($ifIndex && $ifName);
+            $nowUp = $nameByIdx !== null;
 
             $alertState[$devKey] = [
                 'device_up' => $nowUp,
                 'last_check' => $timeLabel,
+                // Siklus yang lengkap berarti kegagalan sebelumnya sudah lewat.
+                'oper_failures' => 0,
             ];
             $alertStateDirty = true;
 
@@ -181,7 +195,7 @@ class InterfaceDiscovery
             }
         }
 
-        if (!$ifName) {
+        if ($nameByIdx === null) {
             $this->markDeviceStatus($deviceId, false, 'SNMP tidak menjawab (IF-MIB ifName) saat polling');
             if ($isCli && $alertStateDirty) {
                 $this->saveAlertState($alertStateFile, $alertState);
@@ -203,11 +217,12 @@ class InterfaceDiscovery
         $this->markDeviceStatus($deviceId, true);
 
         $ifNameMap = [];
-        foreach ($ifIndex as $i => $raw) {
-            $idx = (int) filter_var($raw, FILTER_SANITIZE_NUMBER_INT);
-            $name = trim(str_replace(['STRING:', '"'], '', $ifName[$i] ?? ''));
-            if ($name !== '') {
-                $ifNameMap[$name] = $idx;
+        if ($nameByIdx !== null) {
+            foreach ($nameByIdx as $idx => $raw) {
+                $name = trim(str_replace(['STRING:', '"'], '', (string) $raw));
+                if ($name !== '') {
+                    $ifNameMap[$name] = (int) $idx;
+                }
             }
         }
 
@@ -222,7 +237,7 @@ class InterfaceDiscovery
         // Snapshot of previous counters for delta-based rate calc (only need for SFP).
         $prevCounters = [];
         $prevRows = DB::table('interfaces')
-            ->select(['if_index', 'in_octets', 'out_octets', 'counters_polled_at', 'is_monitored', 'last_seen'])
+            ->select(['if_index', 'in_octets', 'out_octets', 'counters_polled_at', 'is_monitored', 'last_seen', 'oper_status'])
             ->where('device_id', $deviceId)
             ->get();
         // Port yang ditandai "tidak dipakai" (is_monitored = 0): status & RX tetap
@@ -234,7 +249,9 @@ class InterfaceDiscovery
                 $unmonitored[(int) $row->if_index] = true;
             }
         }
+        $prevOper = [];
         foreach ($prevRows as $row) {
+            $prevOper[(int) $row->if_index] = (int) ($row->oper_status ?? 2);
             $prevCounters[(int) $row->if_index] = [
                 'in_octets' => $row->in_octets !== null ? (int) $row->in_octets : null,
                 'out_octets' => $row->out_octets !== null ? (int) $row->out_octets : null,
@@ -257,48 +274,54 @@ class InterfaceDiscovery
         $seenIdx = [];
         $sfpCount = 0;
         $downSfpCount = 0;
+        // Port SFP yang dipantau pada siklus ini — penyebut pengaman "mass transition".
+        $monitoredSfpCount = 0;
+        // Transisi down/up ditampung dulu; dicatat ke SLA setelah seluruh siklus selesai
+        // supaya kejadian massal (kegagalan SNMP) bisa ditahan sebelum masuk laporan.
+        $transitions = [];
+        $deviceLabel = trim(($device->device_name ?? '') . ' (' . $ip . ')');
+        $timeLabel = date('Y-m-d H:i:s');
 
-        foreach ($ifIndex as $i => $raw) {
-            $ifIdx = (int) filter_var($raw, FILTER_SANITIZE_NUMBER_INT);
+        foreach (array_keys($indexByIdx) as $ifIdx) {
             $seenIdx[$ifIdx] = true;
-            $name = trim(str_replace(['STRING:', '"'], '', $ifName[$i] ?? ''));
-            $alias = trim(str_replace(['STRING:', '"'], '', $ifAlias[$i] ?? $name));
-            $desc = trim(str_replace(['STRING:', '"'], '', $ifDescr[$i] ?? $name));
+            $name = trim(str_replace(['STRING:', '"'], '', $nameByIdx[$ifIdx] ?? ''));
+            $alias = trim(str_replace(['STRING:', '"'], '', $aliasByIdx[$ifIdx] ?? $name));
+            $desc = trim(str_replace(['STRING:', '"'], '', $descrByIdx[$ifIdx] ?? $name));
 
-            $oper = 2;
-            if (isset($ifOper[$i])) {
-                $oper = (int) filter_var($ifOper[$i], FILTER_SANITIZE_NUMBER_INT);
-            }
+            // Oper hilang di tengah walk = tidak tahu, bukan down. Status lama dipakai
+            // supaya port tidak "turun" hanya karena satu entri tidak terbaca.
+            [$oper, $operKnown] = self::operForIndex($operByIdx, $ifIdx, (int) ($prevOper[$ifIdx] ?? 2));
 
             $isSfp = 0;
             $type = 'other';
             $tx = null;
             $rx = null;
+            $rxFromSentinel = false;
 
             // Speed (bps). Prefer ifHighSpeed (Mbps) since ifSpeed overflows >4Gbps.
             // SNMP walk values come as "Type: value" (e.g. "Gauge32: 1000") so use
             // preg_match to extract the trailing integer instead of filter_var, which
             // would leak digits from the type prefix.
             $speedBps = null;
-            $hs = $this->snmpIntVal($ifHighSpeed[$i] ?? null);
+            $hs = $this->snmpIntVal($highSpeedByIdx[$ifIdx] ?? null);
             if ($hs !== null && $hs > 0) {
                 $speedBps = $hs * 1000000;
             }
             if ($speedBps === null) {
-                $sp = $this->snmpIntVal($ifSpeed[$i] ?? null);
+                $sp = $this->snmpIntVal($speedByIdx[$ifIdx] ?? null);
                 if ($sp !== null && $sp > 0) {
                     $speedBps = $sp;
                 }
             }
 
             // Traffic counters. Use HC (64-bit) when available, fallback to 32-bit.
-            $inOct = $this->snmpIntVal($ifHCIn[$i] ?? null);
+            $inOct = $this->snmpIntVal($hcInByIdx[$ifIdx] ?? null);
             if ($inOct === null) {
-                $inOct = $this->snmpIntVal($ifIn[$i] ?? null);
+                $inOct = $this->snmpIntVal($inByIdx[$ifIdx] ?? null);
             }
-            $outOct = $this->snmpIntVal($ifHCOut[$i] ?? null);
+            $outOct = $this->snmpIntVal($hcOutByIdx[$ifIdx] ?? null);
             if ($outOct === null) {
-                $outOct = $this->snmpIntVal($ifOut[$i] ?? null);
+                $outOct = $this->snmpIntVal($outByIdx[$ifIdx] ?? null);
             }
 
             // Rate calculation from previous sample.
@@ -357,6 +380,7 @@ class InterfaceDiscovery
                     }
                 } else {
                     $rx = -40.00;
+                    $rxFromSentinel = true;
                     $tx = null;
                     $downSfpCount++;
                 }
@@ -370,11 +394,10 @@ class InterfaceDiscovery
                 $alertStateDirty = true;
             }
 
-            if ($isCli && $isSfp && $monitored) {
-                $deviceLabel = trim(($device->device_name ?? '') . ' (' . $ip . ')');
+            if ($isCli && $isSfp && $monitored && $operKnown) {
+                $monitoredSfpCount++;
                 $ifaceComment = $alias !== '' ? $alias : ($desc !== '' ? $desc : '');
                 $ifaceLabel = $ifaceComment !== '' ? "{$name} ({$ifaceComment})" : $name;
-                $timeLabel = date('Y-m-d H:i:s');
 
                 $stateKey = $deviceId . ':' . $ifIdx;
                 $prevState = $alertState[$stateKey] ?? null;
@@ -448,15 +471,18 @@ class InterfaceDiscovery
                 $linkWentDown = $prevKnown && $prevLinkUp && !$linkUp && ($prevHadOptic || $hasOpticUp);
                 $linkCameUp = $prevKnown && !$prevLinkUp && $linkUp && ($prevHadOptic || $hasOpticUp);
 
-                // Record the down/up transition for SLA/uptime reporting. Done
-                // here (not in emitAlert) so it stays accurate even when alerts
-                // are throttled by flap-cooldown or silenced by maintenance.
-                if ($linkWentDown) {
-                    $this->recordDownEvent($deviceId, $ifIdx, $name, $alias, (string) ($device->device_name ?? ''), true);
-                } elseif ($linkCameUp || ($linkUp && isset($openDownEvents[$ifIdx]))) {
-                    // Second condition = reconciliation: the link is up but an event is still
-                    // open (the transition that should have closed it was never observed).
-                    $this->recordDownEvent($deviceId, $ifIdx, $name, $alias, (string) ($device->device_name ?? ''), false);
+                // Dicatat setelah siklus selesai (lihat pengaman "mass transition"),
+                // supaya kegagalan SNMP tidak masuk laporan SLA sebagai downtime.
+                if ($linkWentDown || $linkCameUp || ($linkUp && isset($openDownEvents[$ifIdx]))) {
+                    $transitions[] = [
+                        'if_index' => $ifIdx,
+                        'if_name' => $name,
+                        'if_alias' => $alias,
+                        'down' => $linkWentDown,
+                        'up' => !$linkWentDown && ($linkCameUp || $linkUp),
+                        'state_key' => $stateKey,
+                        'prev_state' => $prevState,
+                    ];
                 }
 
                 if (
@@ -564,7 +590,7 @@ class InterfaceDiscovery
                 ]);
             }
 
-            if ($isSfp && $monitored && $rx !== null) {
+            if ($isSfp && $monitored && $rx !== null && !$rxFromSentinel) {
                 $loss = ($tx !== null && $rx !== null) ? ($tx - $rx) : null;
                 DB::table('interface_stats')->insert([
                     'device_id' => $deviceId,
@@ -584,6 +610,104 @@ class InterfaceDiscovery
                         'oper_status' => $oper,
                         'updated_at' => now(),
                     ]);
+            }
+        }
+
+        // ---- Pengaman "mass transition" ------------------------------------
+        // Satu switch tidak mungkin kehilangan puluhan port pada detik yang sama lalu
+        // pulih 60 detik kemudian; itu ciri kegagalan pembacaan SNMP, bukan gangguan
+        // nyata (11 Nov 2026 21:40: 34 port "turun" serentak sementara 100GE0/0/1
+        // tetap mengalirkan 34,8 Gbps). Alert per port ditahan dan diganti satu
+        // peringatan; event SLA tidak dicatat karena downtime-nya tidak pernah ada.
+        $downTransitions = 0;
+        $upTransitions = 0;
+        foreach ($transitions as $t) {
+            if ($t['down']) {
+                $downTransitions++;
+            } elseif ($t['up']) {
+                $upTransitions++;
+            }
+        }
+        $massThreshold = self::massTransitionThreshold($monitoredSfpCount);
+
+        if ($downTransitions >= $massThreshold) {
+            foreach ($transitions as $t) {
+                if (!$t['down']) {
+                    continue;
+                }
+                // Kembalikan keadaan sebelumnya supaya siklus berikutnya menilai ulang
+                // dari kenyataan, bukan dari bacaan yang sudah dibatalkan.
+                if ($t['prev_state'] === null) {
+                    unset($alertState[$t['state_key']]);
+                } else {
+                    $alertState[$t['state_key']] = $t['prev_state'];
+                }
+                $alertStateDirty = true;
+            }
+            $pendingAlerts = array_values(array_filter(
+                $pendingAlerts,
+                fn ($a) => !in_array(($a[3] ?? ''), ['interface_down', 'interface_warning'], true)
+            ));
+            $transitions = [];
+            $pendingAlerts[] = [
+                $alertSettings,
+                [
+                    'device_id' => $deviceId,
+                    'device_name' => (string) ($device->device_name ?? ''),
+                    'device_ip' => (string) $ip,
+                ],
+                null,
+                'poll_anomaly',
+                'warning',
+                "Siklus polling mencurigakan: {$downTransitions} port turun serentak di {$deviceLabel}",
+                "⚠️ SIKLUS POLLING MENCURIGAKAN\n📟 Device: {$deviceLabel}\n"
+                    . "🔌 {$downTransitions} port dilaporkan turun serentak dalam satu siklus.\n"
+                    . "Notifikasi per port ditahan — periksa apakah perangkat benar-benar down.\n"
+                    . "🕒 Time: {$timeLabel}",
+            ];
+            Log::warning('Netpulse: mass down ditahan, kemungkinan kegagalan SNMP', [
+                'device_id' => $deviceId,
+                'down_ports' => $downTransitions,
+                'monitored_sfp' => $monitoredSfpCount,
+            ]);
+        } elseif ($upTransitions >= $massThreshold) {
+            $pendingAlerts = array_values(array_filter(
+                $pendingAlerts,
+                fn ($a) => ($a[3] ?? '') !== 'interface_up'
+            ));
+            $pendingAlerts[] = [
+                $alertSettings,
+                [
+                    'device_id' => $deviceId,
+                    'device_name' => (string) ($device->device_name ?? ''),
+                    'device_ip' => (string) $ip,
+                ],
+                null,
+                'poll_anomaly',
+                'info',
+                "Siklus polling mencurigakan: {$upTransitions} port pulih serentak di {$deviceLabel}",
+                "⚠️ SIKLUS POLLING MENCURIGAKAN\n📟 Device: {$deviceLabel}\n"
+                    . "🔌 {$upTransitions} port dilaporkan pulih serentak dalam satu siklus.\n"
+                    . "Notifikasi per port ditahan.\n"
+                    . "🕒 Time: {$timeLabel}",
+            ];
+            Log::warning('Netpulse: mass up ditahan, kemungkinan kegagalan SNMP', [
+                'device_id' => $deviceId,
+                'up_ports' => $upTransitions,
+                'monitored_sfp' => $monitoredSfpCount,
+            ]);
+        }
+
+        if ($isCli) {
+            foreach ($transitions as $t) {
+                $this->recordDownEvent(
+                    $deviceId,
+                    (int) $t['if_index'],
+                    (string) $t['if_name'],
+                    (string) $t['if_alias'],
+                    (string) ($device->device_name ?? ''),
+                    (bool) $t['down']
+                );
             }
         }
 
@@ -810,6 +934,136 @@ class InterfaceDiscovery
         } catch (\Throwable $e) {
             // Never let SLA recording break polling.
         }
+    }
+
+    /**
+     * Status operasional satu port hasil walk, beserta penanda "diketahui?".
+     *
+     * Entri yang hilang berarti walk terpotong — bukan port mati. Pemanggil wajib
+     * mempertahankan status sebelumnya dan tidak mengirim alert (lihat kejadian
+     * 11 Nov 2026: walk ifOperStatus gagal → 34 port dianggap down serentak).
+     *
+     * @param array<int,string> $operByIdx
+     * @return array{0:int,1:bool} [oper, diketahui?]
+     */
+    private static function operForIndex(array $operByIdx, int $ifIdx, int $prevOper): array
+    {
+        if (!isset($operByIdx[$ifIdx])) {
+            return [$prevOper, false];
+        }
+
+        return [(int) filter_var($operByIdx[$ifIdx], FILTER_SANITIZE_NUMBER_INT), true];
+    }
+
+    /**
+     * Ambang "mass transition": minimal 5 port DAN separuh dari port SFP yang
+     * dipantau berubah status dalam satu siklus. Di bawah ambang, perubahan
+     * dianggap nyata dan alert per port tetap dikirim seperti biasa.
+     */
+    private static function massTransitionThreshold(int $monitoredSfpCount): int
+    {
+        return max(5, (int) ceil($monitoredSfpCount * 0.5));
+    }
+
+    /**
+     * Baca satu tabel SNMP dan kunci hasilnya per ifIndex (angka terakhir OID).
+     *
+     * snmp2_walk() hanya mengembalikan daftar nilai tanpa OID-nya, sehingga kode lama
+     * mencocokkan nilai ke ifIndex lewat POSISI array. Begitu satu walk terpotong
+     * (switch lambat menjawab atau SNMP di-rate-limit), posisi bergeser dan status
+     * port A dipakai untuk port B.
+     *
+     * Kejadian nyata 11 Nov 2026 21:40 WIB di switch inti agregasi: walk ifOperStatus
+     * gagal total, seluruh 34 port SFP dianggap turun serentak, 8 alert DOWN + 8 alert
+     * UP terkirim, padahal 100GE0/0/1 saat itu tetap mengalirkan 34,8 Gbps.
+     *
+     * @return array<int,string>|null null = walk gagal (tidak ada jawaban)
+     */
+    private function walkByIndex(string $ip, string $community, string $baseOid, int $timeout, int $retries): ?array
+    {
+        if (!function_exists('snmp2_real_walk')) {
+            // Ekstensi tanpa snmp2_real_walk: jangan menebak lewat posisi array.
+            return null;
+        }
+
+        $raw = @\snmp2_real_walk($ip, $community, $baseOid, $timeout, $retries);
+        if (!is_array($raw) || $raw === []) {
+            return null;
+        }
+
+        $out = [];
+        foreach ($raw as $oid => $value) {
+            if (preg_match('/(\d+)$/', (string) $oid, $m)) {
+                $out[(int) $m[1]] = (string) $value;
+            }
+        }
+
+        return $out !== [] ? $out : null;
+    }
+
+    /**
+     * Siklus tanpa ifOperStatus tidak boleh dipakai menilai apa pun.
+     *
+     * Tanpa data ini satu-satunya pilihan lama adalah menganggap SEMUA port down
+     * (nilai default 2), yang persis menghasilkan notifikasi hantu massal. Sekarang
+     * siklus dilewati: tabel interfaces tidak disentuh, tidak ada alert down/up, dan
+     * state up/down port dipertahankan. Setelah tiga siklus berturut-turut barulah
+     * satu peringatan dikirim — cukup untuk memberi tahu tanpa membanjiri.
+     */
+    private function skipCycleWithoutOper(
+        object $device,
+        int $deviceId,
+        bool $isCli,
+        string $alertStateFile,
+        array $alertState,
+        array $alertSettings
+    ): array {
+        $ip = (string) ($device->ip_address ?? '');
+        $deviceLabel = trim(($device->device_name ?? '') . ' (' . $ip . ')');
+        $timeLabel = date('Y-m-d H:i:s');
+
+        // Perangkat menjawab; yang gagal hanya satu tabel MIB.
+        $this->markDeviceStatus($deviceId, true);
+
+        $devKey = "dev:{$deviceId}";
+        $state = is_array($alertState[$devKey] ?? null) ? $alertState[$devKey] : ['device_up' => true];
+        $failures = (int) ($state['oper_failures'] ?? 0) + 1;
+        $state['oper_failures'] = $failures;
+        $state['last_oper_fail'] = $timeLabel;
+        $alertState[$devKey] = $state;
+
+        if ($isCli) {
+            $this->saveAlertState($alertStateFile, $alertState);
+        }
+
+        Log::warning('Netpulse: ifOperStatus tidak terbaca, siklus dilewati', [
+            'device_id' => $deviceId,
+            'consecutive_failures' => $failures,
+        ]);
+
+        if ($isCli && $failures === 3) {
+            $this->emitAlert(
+                $alertSettings,
+                [
+                    'device_id' => $deviceId,
+                    'device_name' => (string) ($device->device_name ?? ''),
+                    'device_ip' => $ip,
+                ],
+                null,
+                'poll_anomaly',
+                'warning',
+                "Polling tidak lengkap: {$deviceLabel}",
+                "⚠️ POLLING TIDAK LENGKAP\n📟 Device: {$deviceLabel}\n"
+                    . "🔌 ifOperStatus tidak terbaca {$failures} siklus berturut-turut.\n"
+                    . "Status port tidak diubah dan tidak ada alert down palsu.\n"
+                    . "🕒 Time: {$timeLabel}"
+            );
+        }
+
+        return [
+            'success' => false,
+            'error' => "SKIP device ID: {$deviceId} (ifOperStatus tidak terbaca)",
+        ];
     }
 
     /**

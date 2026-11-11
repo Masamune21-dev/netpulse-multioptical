@@ -4,6 +4,45 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-11-11 — Fixed: Notifikasi "Hantu" Massal (Walk SNMP Terpotong) + Pembersihan SLA
+
+Latar: 21:40:03 WIB, 34 dari 34 port SFP pada switch inti agregasi dilaporkan DOWN serentak,
+8 alert DOWN + 8 alert UP terkirim, 34 baris `interface_down_events` tercatat, lalu semuanya "pulih"
+60–61 detik kemudian — padahal `100GE0/0/1` pada detik yang sama tetap mengalirkan 34,8 Gbps.
+
+- **Fixed — akar masalah di `app/Services/InterfaceDiscovery.php`:**
+  `snmp2_walk()` hanya mengembalikan daftar nilai tanpa OID, jadi kode lama mencocokkan nilai ke
+  `ifIndex` **lewat posisi array**. Begitu satu walk terpotong, posisi bergeser dan status port A
+  dipakai untuk port B; bila walk `ifOperStatus` gagal total, `$oper` jatuh ke nilai default `2`
+  (= down) untuk **semua** port. Sekarang walk dibaca lewat `walkByIndex()` (`snmp2_real_walk`,
+  dikunci per `ifIndex`), dan entri yang hilang dibaca lewat `operForIndex()` sebagai
+  **"tidak tahu"** — status sebelumnya dipertahankan, bukan dianggap down.
+- **Fixed — siklus tanpa `ifOperStatus` dilewati:** `skipCycleWithoutOper()` tidak menyentuh tabel
+  `interfaces`, tidak mengirim alert down/up, dan hanya mengirim satu peringatan `poll_anomaly`
+  setelah 3 siklus gagal berturut-turut.
+- **Fixed — pengaman "mass transition":** `massTransitionThreshold()` = maksimal(5, ½ port SFP
+  terpantau). Bila ≥ ambang port berubah status dalam satu siklus, alert per port ditahan dan
+  diganti satu `poll_anomaly`, keadaan alert per port dikembalikan ke nilai sebelum siklus, dan
+  **tidak ada** event SLA yang dicatat — downtime-nya memang tidak pernah terjadi.
+  Ambang ini juga yang membuat 3 alert DOWN tunggal (22:44, port benar-benar berhenti) tetap lolos.
+- **Fixed — sampel optik sentinel:** `-40.00` (penanda "tak ada bacaan", bukan RX nyata) tidak lagi
+  ditulis ke `interface_stats`, sehingga rollup harian/bulanan tidak lagi menampilkan redaman palsu.
+- **Created — `tests/Unit/MassTransitionTest.php`** (4 test): ambang untuk switch besar/kecil,
+  deteksi kejadian mass down switch besar, dan perilaku `operForIndex()` saat entri hilang.
+- **Changed — data SLA/optik yang tercemar dibersihkan** (cadangan penuh lebih dulu:
+  `/var/backups/kusumavision/manual/netpulse-sebelum-bersih-sla-*.sql.gz`, 258 MB, izin 600):
+  94 baris `interface_down_events` dihapus pada 5 timestamp massal (11 Nov 34 port, 30 Okt 33,
+  5 Nov 14, 8 Nov 6, 21 Okt 7) dan 95 sampel `interface_stats` ber-`rx_power = -40` pada timestamp
+  yang sama. Rollup 5 hari tersebut dihitung ulang (`stats:rollup`, idempoten).
+- **Notes — kelima kejadian terbukti artefak**, bukan gangguan nyata: port yang "down" justru
+  sedang mengalirkan trafik 29 port/34,8 Gbps (11 Nov), 27/32,7 Gbps, 13/4,8 Gbps, 6/2,8 Gbps,
+  6/5,7 Gbps. Sisa satu baris `rx=-40` pada timestamp massal milik perangkat lain dan dibiarkan
+  karena port itu memang mati.
+- **Notes — verifikasi:** `bash scripts/test.sh` 79 lulus (413 asersi). Poll nyata
+  `poll:interfaces --device=23` 1,29 dtk tanpa alert/event baru; walk nyata 86 entri terpetakan
+  benar; rate trafik normal pada siklus kedua. Seluruh 22 perangkat `OK/up`. Tidak perlu restart —
+  poller adalah proses artisan baru tiap menit (cron), tanpa perubahan config.
+
 ## 2026-11-11 — Created: `AGENTS.md` — konteks otomatis AI agent (OpenCode)
 
 Latar: OpenCode V2 hanya membaca `AGENTS.md` dan **tidak** membaca `CLAUDE.md`, sehingga sesi AI
