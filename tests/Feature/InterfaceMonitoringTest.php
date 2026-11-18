@@ -181,6 +181,26 @@ class InterfaceMonitoringTest extends TestCase
         $this->assertCount(3, $all->json());
     }
 
+    /**
+     * Halaman Monitoring butuh status link + ambang RX: tanpa oper_status, port mati
+     * hanya tampil "grafik berhenti" dengan angka terakhir sebelum link putus
+     * (temuan 18 Nov 2026).
+     */
+    public function test_monitoring_mengirim_status_link_dan_ambang_rx(): void
+    {
+        $res = $this->as('admin')->getJson('/api/monitoring_interfaces?device_id=1')->assertOk();
+        $rows = collect($res->json())->keyBy('if_index');
+
+        $this->assertSame(1, $rows[1]['oper_status']);
+        $this->assertSame(2, $rows[2]['oper_status']);
+        $this->assertTrue($rows[1]['is_monitored']);
+        $this->assertArrayHasKey('last_seen', $rows[1]);
+
+        // Ambang global dipakai bila tidak ada override per port.
+        $this->assertEquals(-40.0, $rows[2]['rx_down_threshold']);
+        $this->assertGreaterThan($rows[2]['rx_warn_low'], $rows[2]['rx_warn_high']);
+    }
+
     public function test_api_mobile_monitoring_menyembunyikan_port_tidak_dipakai(): void
     {
         $this->as('admin'); // buat user

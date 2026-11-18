@@ -215,6 +215,14 @@ final class ViewerDummyData
                 'if_alias' => $i['if_alias'] ?? null,
                 'tx_power' => $i['tx_power'],
                 'rx_power' => $i['rx_power'],
+                // Sama seperti respons produksi: status link + ambang RX ikut dikirim
+                // supaya halaman Monitoring bisa menandai port DOWN dan badge level RX.
+                'is_monitored' => true,
+                'oper_status' => (int) ($i['oper_status'] ?? 1),
+                'last_seen' => now()->toDateTimeString(),
+                'rx_warn_high' => -18.0,
+                'rx_warn_low' => -25.0,
+                'rx_down_threshold' => -40.0,
             ];
         }
         return $out;

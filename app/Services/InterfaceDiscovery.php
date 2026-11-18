@@ -279,6 +279,12 @@ class InterfaceDiscovery
         // Transisi down/up ditampung dulu; dicatat ke SLA setelah seluruh siklus selesai
         // supaya kejadian massal (kegagalan SNMP) bisa ditahan sebelum masuk laporan.
         $transitions = [];
+
+        // Sampel LOS (-40) untuk port yang benar-benar DOWN ditampung dulu dan baru ditulis
+        // setelah pengaman "mass transition" lolos. Dengan begitu kegagalan pembacaan SNMP
+        // tidak pernah menanam deretan sampel -40 palsu ke grafik monitoring maupun rollup.
+        $pendingDownSamples = [];
+        $massDownSuppressed = false;
         $deviceLabel = trim(($device->device_name ?? '') . ' (' . $ip . ')');
         $timeLabel = date('Y-m-d H:i:s');
 
@@ -611,6 +617,18 @@ class InterfaceDiscovery
                         'updated_at' => now(),
                     ]);
             }
+
+            // Port yang benar-benar mati (ifOperStatus ≠ 1) tidak punya bacaan DDM sama
+            // sekali. Tanpa sampel, grafik monitoring berhenti di sampel terakhir yang
+            // masih UP sehingga port tampak "nyala" dan nilainya tidak pernah berubah
+            // (18 Nov 2026: kartu "Sekarang" tetap menampilkan RX terakhir sebelum link
+            // putus, padahal alert DOWN sudah terkirim).
+            // Satu sampel LOS (-40, TX kosong) dicatat tiap siklus selama port mati.
+            // Kasus "port UP tapi RX tak terbaca" tetap TIDAK dicatat — itu kegagalan walk,
+            // bukan link putus, dan dulu mencemari rollup dengan -40 palsu.
+            if (self::shouldRecordLossSample($isSfp === 1, $monitored, $operKnown, (int) $oper)) {
+                $pendingDownSamples[] = $ifIdx;
+            }
         }
 
         // ---- Pengaman "mass transition" ------------------------------------
@@ -631,6 +649,7 @@ class InterfaceDiscovery
         $massThreshold = self::massTransitionThreshold($monitoredSfpCount);
 
         if ($downTransitions >= $massThreshold) {
+            $massDownSuppressed = true;
             foreach ($transitions as $t) {
                 if (!$t['down']) {
                     continue;
@@ -696,6 +715,34 @@ class InterfaceDiscovery
                 'up_ports' => $upTransitions,
                 'monitored_sfp' => $monitoredSfpCount,
             ]);
+        }
+
+        // Sampel LOS untuk port yang mati: ditulis hanya bila siklus ini tidak dicap sebagai
+        // "mass transition" (kegagalan SNMP). Rollup memakai agregat MIN, jadi jam saat port
+        // benar-benar mati akan tercatat -40 — itu memang LOS, bukan redaman palsu.
+        if ($pendingDownSamples !== [] && !$massDownSuppressed) {
+            $sampleAt = now();
+            $batch = [];
+            foreach ($pendingDownSamples as $ifIdxDown) {
+                $batch[] = [
+                    'device_id' => $deviceId,
+                    'if_index' => $ifIdxDown,
+                    'tx_power' => null,
+                    'rx_power' => -40.00,
+                    'loss' => null,
+                    'created_at' => $sampleAt,
+                ];
+            }
+
+            try {
+                DB::table('interface_stats')->insert($batch);
+            } catch (\Throwable $e) {
+                Log::warning('Netpulse: gagal mencatat sampel LOS', [
+                    'device_id' => $deviceId,
+                    'ports' => count($batch),
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         if ($isCli) {
@@ -963,6 +1010,20 @@ class InterfaceDiscovery
     private static function massTransitionThreshold(int $monitoredSfpCount): int
     {
         return max(5, (int) ceil($monitoredSfpCount * 0.5));
+    }
+
+    /**
+     * Apakah port ini harus menghasilkan sampel LOS (-40) di `interface_stats`?
+     *
+     * Hanya port SFP terpantau yang statusnya DIKETAHUI dan benar-benar mati
+     * (ifOperStatus ≠ 1). Dua kasus sengaja tidak termasuk:
+     *  - `$operKnown = false`  → walk ifOperStatus terpotong, status tidak diketahui.
+     *  - port UP (oper = 1) dengan RX null → walk DDM gagal, bukan link putus; dulu
+     *    kasus inilah yang menanam -40 palsu di grafik dan rollup (28 Okt 2026).
+     */
+    private static function shouldRecordLossSample(bool $isSfp, bool $monitored, bool $operKnown, int $oper): bool
+    {
+        return $isSfp && $monitored && $operKnown && $oper !== 1;
     }
 
     /**

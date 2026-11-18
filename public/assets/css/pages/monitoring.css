@@ -64,6 +64,44 @@
     box-shadow: 5px 5px 0 var(--accent-2);
 }
 
+/* Status link port terpilih: dibuat mencolok supaya port mati tidak tampak "normal". */
+.mon-iface-banner.is-down {
+    border-color: var(--danger);
+    box-shadow: 5px 5px 0 var(--danger);
+}
+
+.mon-iface-text {
+    align-items: center;
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.mon-iface-alias {
+    color: var(--text-soft);
+    font-weight: 800;
+}
+
+.mon-iface-note {
+    color: var(--text-soft);
+    font-size: 0.7rem;
+    font-weight: 800;
+}
+
+.mon-link-chip {
+    border: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 2px 2px 0 var(--ink);
+    font-size: 0.68rem;
+    font-weight: 900;
+    letter-spacing: 0.03em;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+.mon-link-chip--up { background: #16a34a; color: #ffffff; }
+.mon-link-chip--down { background: #dc2626; color: #ffffff; }
+
 .mon-stats-grid {
     display: grid;
     gap: 14px;

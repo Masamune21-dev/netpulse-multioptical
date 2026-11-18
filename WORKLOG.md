@@ -4,6 +4,55 @@ Sistem pemantauan status antarmuka fiber optik, redaman/DDM optical power, dan S
 
 ---
 
+## 2026-11-18 — Fixed: Port DOWN Tidak Terlihat di Halaman Monitoring (Grafik "Nyala" & Tidak Update)
+
+Latar: sebuah port SFP pelanggan pada switch Huawei benar-benar mati (oper turun, event SLA
+dibuka, alert Telegram + push APK terkirim `interface_down`), tetapi halaman **Monitoring**
+(`/monitoring`) tetap menampilkan RX terakhir sebelum link putus dengan badge normal — port
+tampak "masih nyala" dan nilainya tidak pernah berubah. Poller sendiri tidak bermasalah:
+`interfaces.oper_status` = 2, `last_seen` segar, `interface_down_events` terbuka, `alert_logs`
+mencatat `interface_down` critical.
+
+Akar masalah (dua lapis):
+1. `MonitoringApiController::interfaces()` tidak pernah mengirim `oper_status`/`last_seen`,
+   jadi halaman Monitoring tidak punya cara tahu port sedang mati.
+2. Poller berhenti menulis sampel `interface_stats` saat port down (RX sentinel `-40` dibuang
+   sejak 11 Nov 2026), sehingga grafik & kartu "Sekarang (RX)" membeku di sampel terakhir yang
+   masih UP — persis terbaca sebagai "status nyala tapi data tidak update".
+
+- **Fixed — `app/Services/InterfaceDiscovery.php`:** sampel LOS kini dicatat. Port SFP terpantau
+  yang statusnya **diketahui** mati (`ifOperStatus ≠ 1`) menulis satu baris `interface_stats`
+  (`rx_power = -40`, `tx_power/loss = null`) per siklus, lewat `shouldRecordLossSample()` (dapat
+  diuji). Penulisan ditampung di `$pendingDownSamples` dan baru dieksekusi **setelah** pengaman
+  "mass transition" lolos (`$massDownSuppressed`), supaya kegagalan walk SNMP tidak menanam
+  deretan -40 palsu. Kasus "port UP tapi RX tak terbaca" tetap tidak dicatat — itu kegagalan
+  walk DDM, bukan link putus.
+- **Fixed — `app/Http/Controllers/MonitoringApiController.php`:** respons `monitoring_interfaces`
+  menambah `oper_status`, `last_seen`, `is_monitored`, dan ambang RX (`rx_warn_high`,
+  `rx_warn_low`, `rx_down_threshold`) dari tabel `settings` + override `interface_thresholds`,
+  sehingga badge memakai ambang yang sama dengan pengirim notifikasi (bukan angka hardcode).
+- **Fixed — `public/assets/js/monitoring.js`:** banner interface menampilkan chip `⛔ PORT DOWN`
+  (merah) / `● LINK UP` + "data optik terakhir HH:MM (… lalu)" dengan penanda **basi** per range;
+  kartu "Sekarang (RX)" menampilkan **LOS** (bukan angka terakhir sebelum mati) dan badge
+  NORMAL/WARN/CRITICAL kini benar-benar terisi (bridge `#rxStats` lama tidak pernah menulis apa
+  pun sehingga badge selalu kosong); daftar pilihan interface menandai `⛔ DOWN`; metadata status
+  disegarkan tiap 60 detik agar port yang turun/naik saat halaman terbuka langsung terlihat.
+- **Fixed — `app/Support/ViewerDummyData.php`:** data demo viewer ikut mengirim `oper_status`,
+  `last_seen`, dan ambang RX supaya tampilan akun demo konsisten.
+- **Changed — `public/assets/css/pages/monitoring.css`:** gaya chip status link, catatan data
+  basi, dan banner merah saat port terpilih DOWN.
+- **Created — `tests/Unit/LossSampleTest.php`** (4 test) dan satu test baru di
+  `tests/Feature/InterfaceMonitoringTest.php` (respons API memuat status link + ambang RX).
+- **Notes — verifikasi:** `bash scripts/test.sh` 84 lulus (426 asersi). Di produksi: setelah kode
+  aktif, port SFP terpantau yang sedang mati (oper 6) kembali menghasilkan sampel `-40` tiap
+  menit, dan respons API nyata memuat `oper_status`, `last_seen`, serta ambang `-19 / -25 / -40`.
+  Tanpa restart: poller adalah proses artisan baru tiap menit dan opcache FPM me-revalidasi 2 dtk;
+  aset statis memakai `filemtime` sebagai cache-busting (tanpa build).
+- **Notes — dampak penyimpanan:** port yang mati lama menambah ±1.440 baris/port/hari di
+  `interface_stats` (retensi mentah 30 hari, lalu `stats:rollup`). Rollup MIN akan mencatat `-40`
+  pada jam port benar-benar mati — itu LOS sungguhan, bukan redaman palsu, dan justru membuat
+  `sla:reconcile` lebih tepat menentukan awal gangguan.
+
 ## 2026-11-11 — Fixed: Notifikasi "Hantu" Massal (Walk SNMP Terpotong) + Pembersihan SLA
 
 Latar: 21:40:03 WIB, 34 dari 34 port SFP pada switch inti agregasi dilaporkan DOWN serentak,

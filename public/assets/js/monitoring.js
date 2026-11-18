@@ -3,6 +3,13 @@ let currentRange = '1h';
 let autoRefreshTimer = null;
 let autoRefreshPaused = false;
 
+// Metadata port terpilih dari /api/monitoring_interfaces (oper_status + last_seen).
+// Tanpa ini halaman Monitoring tidak tahu port sedang DOWN: grafik hanya berhenti di
+// sampel terakhir yang masih UP dan port tampak "nyala" (temuan 18 Nov 2026).
+let ifaceMeta = {};
+let metaTimer = null;
+let lastSampleAt = null;
+
 const deviceSelect = document.getElementById('deviceSelect');
 const interfaceSelect = document.getElementById('interfaceSelect');
 const rangeSelect = document.getElementById('rangeSelect');
@@ -51,6 +58,51 @@ function stopAutoRefresh() {
 }
 
 /* ======================================================
+   METADATA PORT (status link)
+===================================================== */
+function fetchIfaceList() {
+    const extra = showUnmonitoredEl && showUnmonitoredEl.checked ? '&include_unmonitored=1' : '';
+    return fetch(`api/monitoring_interfaces?device_id=${encodeURIComponent(deviceSelect.value)}${extra}`)
+        .then(r => r.json());
+}
+
+function startMetaRefresh() {
+    stopMetaRefresh();
+    metaTimer = setInterval(refreshIfaceMeta, 60000);
+}
+
+function stopMetaRefresh() {
+    if (metaTimer) {
+        clearInterval(metaTimer);
+        metaTimer = null;
+    }
+}
+
+// Status link berubah tanpa kita memilih ulang port: ambil ulang metadata tiap menit
+// dan perbarui banner tanpa menyentuh daftar pilihan (pilihan user tidak hilang).
+function refreshIfaceMeta() {
+    if (!deviceSelect.value) return;
+
+    fetchIfaceList()
+        .then(ifs => {
+            ifs.forEach(i => { ifaceMeta[String(i.if_index)] = i; });
+            renderLinkStatus();
+        })
+        .catch(() => { /* biarkan status terakhir */ });
+}
+
+function metaForSelected() {
+    const idx = interfaceSelect.value;
+    return idx ? (ifaceMeta[String(idx)] || null) : null;
+}
+
+function isSelectedDown() {
+    const meta = metaForSelected();
+    return !!meta && meta.oper_status !== null && meta.oper_status !== undefined
+        && Number(meta.oper_status) !== 1;
+}
+
+/* ======================================================
    LOAD DEVICES & INTERFACES
 ====================================================== */
 function loadDevices() {
@@ -74,22 +126,27 @@ const showUnmonitoredEl = document.getElementById('showUnmonitored');
 
 function loadInterfaceOptions() {
     stopAutoRefresh();
+    stopMetaRefresh();
+    ifaceMeta = {};
+    lastSampleAt = null;
     interfaceSelect.innerHTML =
         '<option value="">-- Pilih Interface --</option>';
 
     if (!deviceSelect.value) return;
 
-    const extra = showUnmonitoredEl && showUnmonitoredEl.checked ? '&include_unmonitored=1' : '';
-    fetch(`api/monitoring_interfaces?device_id=${encodeURIComponent(deviceSelect.value)}${extra}`)
-        .then(r => r.json())
+    fetchIfaceList()
         .then(ifs => {
             ifs.forEach(i => {
+                ifaceMeta[String(i.if_index)] = i;
                 const off = i.is_monitored === false ? ' (tidak dipakai)' : '';
+                // Penanda status langsung di daftar: port mati tidak lagi tampak setara
+                // dengan port yang hidup saat memilih.
+                const down = i.oper_status !== null && i.oper_status !== undefined && Number(i.oper_status) !== 1;
                 interfaceSelect.innerHTML += `
                     <option value="${escHtml(i.if_index)}"
                             data-name="${escHtml(i.if_name)}"
                             data-alias="${escHtml(i.if_alias || '')}">
-                        ${escHtml(i.if_name)}${i.if_alias ? ' — ' + escHtml(i.if_alias) : ''}${escHtml(off)}
+                        ${escHtml(i.if_name)}${i.if_alias ? ' — ' + escHtml(i.if_alias) : ''}${escHtml(off)}${down ? ' ⛔ DOWN' : ''}
                     </option>`;
             });
         });
@@ -102,15 +159,11 @@ interfaceSelect.addEventListener('change', () => {
     const opt = interfaceSelect.selectedOptions[0];
     if (!opt) return;
 
-    const name = opt.dataset.name;
-    const alias = opt.dataset.alias;
-
-    document.getElementById('ifaceInfo').innerHTML = alias
-        ? `Interface: <b>${escHtml(name)}</b> <span style="color:#64748b">(${escHtml(alias)})</span>`
-        : `Interface: <b>${escHtml(name)}</b>`;
+    renderLinkStatus();
 
     loadChart();
     startAutoRefresh();
+    startMetaRefresh();
 });
 
 // Pause polling when tab is hidden (reduce load)
@@ -119,6 +172,7 @@ document.addEventListener('visibilitychange', () => {
         if (autoRefreshTimer) {
             autoRefreshPaused = true;
             stopAutoRefresh();
+            stopMetaRefresh();
         }
         return;
     }
@@ -126,6 +180,7 @@ document.addEventListener('visibilitychange', () => {
     if (autoRefreshPaused && interfaceSelect.value) {
         autoRefreshPaused = false;
         startAutoRefresh();
+        startMetaRefresh();
     }
 });
 
@@ -229,9 +284,14 @@ function loadChart() {
         .then(data => {
             if (!data.length) {
                 // Tampilkan pesan atau chart kosong
+                lastSampleAt = null;
                 updateStats([-40]); // Default -40 dBm
+                renderLinkStatus();
                 return;
             }
+
+            // Waktu sampel terakhir dipakai untuk menandai data yang sudah basi.
+            lastSampleAt = data[data.length - 1].created_at;
 
             // Filter dan map data
             const rx = data.map(d => {
@@ -341,11 +401,78 @@ function loadChart() {
 
             chart.update();
             updateStats(rx);
+            renderLinkStatus();
         })
         .catch(err => {
             console.error('Error loading chart:', err);
+            lastSampleAt = null;
             updateStats([-40]); // Fallback ke -40 dBm
+            renderLinkStatus();
         });
+}
+
+/* ======================================================
+   BANNER STATUS LINK
+===================================================== */
+// Ambang "data basi" per range (menit). Range panjang memang berbucket jam/hari,
+// jadi toleransinya lebih lebar.
+const STALE_MINUTES = { '1h': 5, '1d': 20, '3d': 30, '7d': 120 };
+
+function fmtClock(value) {
+    const d = new Date(String(value).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return String(value);
+
+    const pad = n => String(n).padStart(2, '0');
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+    return sameDay ? hm : `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${hm}`;
+}
+
+function ageSuffix() {
+    const limit = STALE_MINUTES[currentRange];
+    if (!lastSampleAt || !limit) return '';
+
+    const d = new Date(String(lastSampleAt).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return '';
+
+    const mins = Math.round((Date.now() - d.getTime()) / 60000);
+    if (mins <= limit) return '';
+    if (mins < 60) return ` — ${mins} menit lalu (basi)`;
+
+    const hours = Math.floor(mins / 60);
+    if (hours < 48) return ` — ${hours} jam lalu (basi)`;
+
+    return ` — ${Math.floor(hours / 24)} hari lalu (basi)`;
+}
+
+function renderLinkStatus() {
+    const el = document.getElementById('ifaceInfo');
+    const opt = interfaceSelect.selectedOptions[0];
+    if (!el || !opt || !opt.value) return;
+
+    const name = opt.dataset.name || '';
+    const alias = opt.dataset.alias || '';
+    const meta = metaForSelected() || {};
+    const down = isSelectedDown();
+    const parts = [];
+
+    parts.push(`Interface: <b>${escHtml(name)}</b>`);
+    if (alias) parts.push(`<span class="mon-iface-alias">(${escHtml(alias)})</span>`);
+
+    if (meta.oper_status !== null && meta.oper_status !== undefined) {
+        parts.push(down
+            ? '<span class="mon-link-chip mon-link-chip--down">⛔ PORT DOWN</span>'
+            : '<span class="mon-link-chip mon-link-chip--up">● LINK UP</span>');
+    }
+
+    if (lastSampleAt) {
+        parts.push(`<span class="mon-iface-note">data optik terakhir ${escHtml(fmtClock(lastSampleAt))}${escHtml(ageSuffix())}</span>`);
+    }
+
+    el.classList.toggle('is-down', down);
+    el.innerHTML = '<i class="fas fa-circle-nodes"></i>'
+        + `<span class="mon-iface-text">${parts.join(' ')}</span>`;
 }
 
 /* ======================================================
@@ -356,12 +483,22 @@ function updateStats(rx) {
         const el = document.getElementById(id);
         if (el) el.textContent = val;
     };
+    const unitEl = document.querySelector('.mon-stat--now .mon-stat__unit');
+    const badgeEl = document.getElementById('statNowBadge');
+
+    const setBadge = (cls, text) => {
+        if (!badgeEl) return;
+        badgeEl.className = 'mon-rx-badge ' + cls;
+        badgeEl.textContent = text;
+        badgeEl.style.display = 'inline-block';
+    };
 
     if (!rx || rx.length === 0) {
         setCard('statNow', '—');
         setCard('statAvg', '—');
         setCard('statMin', '—');
         setCard('statMax', '—');
+        if (badgeEl) badgeEl.style.display = 'none';
         return;
     }
 
@@ -382,8 +519,39 @@ function updateStats(rx) {
         max = -40;
     }
 
-    setCard('statNow', now.toFixed(2));
+    // Port yang benar-benar DOWN (oper_status ≠ 1): jangan tampilkan angka optik
+    // terakhir sebelum link putus. Angka itu yang dulu membuat port mati terlihat
+    // "masih nyala" dan seolah tidak pernah update.
+    if (isSelectedDown()) {
+        setCard('statNow', 'LOS');
+        if (unitEl) unitEl.style.display = 'none';
+        setBadge('mon-rx-down', 'DOWN');
+    } else {
+        if (unitEl) unitEl.style.display = '';
+        setCard('statNow', now.toFixed(2));
+        setBadgeByValue(now, setBadge);
+    }
+
     setCard('statAvg', avg.toFixed(2));
     setCard('statMin', min.toFixed(2));
     setCard('statMax', max.toFixed(2));
+}
+
+// Level RX memakai ambang dari pengaturan alert (dikirim /api/monitoring_interfaces),
+// bukan angka hardcode, supaya badge sama dengan yang dipakai pengirim notifikasi.
+function setBadgeByValue(value, setBadge) {
+    const meta = metaForSelected() || {};
+    const down = isFinite(Number(meta.rx_down_threshold)) ? Number(meta.rx_down_threshold) : -40;
+    const warnLow = isFinite(Number(meta.rx_warn_low)) ? Number(meta.rx_warn_low) : -25;
+    const warnHigh = isFinite(Number(meta.rx_warn_high)) ? Number(meta.rx_warn_high) : -18;
+
+    if (value <= down) {
+        setBadge('mon-rx-down', 'LOS');
+    } else if (value < warnLow) {
+        setBadge('mon-rx-crit', 'CRITICAL');
+    } else if (value <= warnHigh) {
+        setBadge('mon-rx-warn', 'WARN');
+    } else {
+        setBadge('mon-rx-ok', 'NORMAL');
+    }
 }
